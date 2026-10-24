@@ -12,10 +12,9 @@
     "next": "16.2.4",
     "react": "19.2.4",
     "@prisma/client": "^5.0.0",
-"@shopify/shopify-api": "^9.0.0",
-"@shopify/shopify-app-remix": "^3.0.0",
-"anon-aadhaar-react": "latest",
-
+    "@shopify/shopify-api": "^9.0.0",
+    "@shopify/shopify-app-remix": "^3.0.0",
+    "anon-aadhaar-react": "latest",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
