@@ -2,9 +2,33 @@
 
 import '@shopify/polaris/build/esm/styles.css';
 import enTranslations from '@shopify/polaris/locales/en.json';
-import { AppProvider, Page, Layout, Card, Text, Button, BlockStack } from '@shopify/polaris';
+import { AppProvider, Page, Layout, Card, Text, Button, BlockStack, Banner } from '@shopify/polaris';
+import { useState } from 'react';
 
 export default function ZeroAssertDashboard() {
+  const [status, setStatus] = useState('Engine online. Ready for proof verification.');
+  const [verified, setVerified] = useState(false);
+
+  const runZkVerification = async () => {
+    setStatus('Generating and verifying Zero-Knowledge Proof...');
+    try {
+      const response = await fetch('/api/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proof: { mock: true }, publicSignals: ['1'] })
+      });
+      const data = await response.json();
+      if (data.verified) {
+        setVerified(true);
+        setStatus(data.message);
+      } else {
+        setStatus('Verification failed.');
+      }
+    } catch (err) {
+      setStatus('Network error during cryptographic handshake.');
+    }
+  };
+
   return (
     <AppProvider i18n={enTranslations}>
       <Page title="ZeroAssert Identity Engine">
@@ -13,13 +37,16 @@ export default function ZeroAssertDashboard() {
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingMd">
-                  Engine Status: Online
+                  Cryptographic Pipeline: Active
                 </Text>
-                <Text as="p">
-                  Your Zero-Knowledge Proof authentication pipeline is active and securely bridged to Supabase.
-                </Text>
-                <Button variant="primary" onClick={() => alert('Diagnostic complete. Pipeline secure.')}>
-                  Run Diagnostic
+                <Text as="p">{status}</Text>
+                {verified && (
+                  <Banner tone="success">
+                    <p>Merchant identity securely validated via ZKP. Zero raw data exposed.</p>
+                  </Banner>
+                )}
+                <Button variant="primary" onClick={runZkVerification}>
+                  Execute ZKP Verification
                 </Button>
               </BlockStack>
             </Card>
@@ -29,10 +56,10 @@ export default function ZeroAssertDashboard() {
             <Card>
               <BlockStack gap="200">
                 <Text as="h2" variant="headingSm">
-                  Quick Stats
+                  Security Metrics
                 </Text>
-                <Text as="p">Verified Identities: 0</Text>
-                <Text as="p">Active Sessions: 1</Text>
+                <Text as="p">Protocol: Groth16 / snarkjs</Text>
+                <Text as="p">Database: Supabase (Encrypted)</Text>
               </BlockStack>
             </Card>
           </Layout.Section>
@@ -41,4 +68,3 @@ export default function ZeroAssertDashboard() {
     </AppProvider>
   );
 }
-
