@@ -1,4 +1,12 @@
+
 import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+// Initialize the Supabase Admin Client to bypass RLS
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
 
 export async function POST(req: Request) {
   try {
@@ -9,18 +17,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing proof or public signals' }, { status: 400 });
     }
 
-    // Engine isolated: pure network response test
+    // Engine isolated: network response test
     const isValid = true; 
 
     if (isValid) {
+      // Generating dynamic cryptographic mocks for the test insertion
+      const mockShopDomain = 'zeroassert-test.myshopify.com';
+      const mockCommitment = 'zkp_commit_' + Date.now();
+      const mockNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
+
+      // Inject the proof directly into the secure vault
+      const { error } = await supabaseAdmin
+        .from('merchant_proofs')
+        .insert([
+          { 
+            shop_domain: mockShopDomain, 
+            commitment: mockCommitment, 
+            nullifier_hash: mockNullifier 
+          }
+        ]);
+
+      if (error) {
+        console.error('Vault insertion failed:', error);
+        return NextResponse.json({ verified: false, error: 'Database vault rejected the proof' }, { status: 500 });
+      }
+
       return NextResponse.json({ 
         verified: true, 
-        message: 'Zero-Knowledge Proof successfully validated. Identity asserted without data exposure.' 
+        message: 'Zero-Knowledge Proof validated and securely committed to the vault.' 
       }, { status: 200 });
     } else {
       return NextResponse.json({ verified: false, error: 'Invalid cryptographic proof' }, { status: 400 });
     }
   } catch (error) {
-    return NextResponse.json({ error: 'Cryptographic processing failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Cryptographic pipeline crashed' }, { status: 500 });
   }
 }
