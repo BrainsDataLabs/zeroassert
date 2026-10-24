@@ -17,7 +17,8 @@
     "@prisma/client": "^5.0.0",
     "@shopify/shopify-api": "^9.0.0",
     "@shopify/shopify-app-remix": "^3.0.0",
-    "anon-aadhaar-react": "latest"
+    "anon-aadhaar-react": "latest",
+    "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
     "prisma": "^5.0.0",
