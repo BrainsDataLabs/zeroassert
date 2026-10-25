@@ -42,7 +42,7 @@ export default function Home() {
         zkeyPath
       );
 
-      const response = await fetch('/api/verify', {
+      const response = await fetch('/api/zkp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ proof, publicSignals, shopDomain: liveShopDomain }),
