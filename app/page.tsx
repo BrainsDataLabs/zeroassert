@@ -1,99 +1,105 @@
-import Script from 'next/script';
 "use client";
 
-import '@shopify/polaris/build/esm/styles.css';
-import enTranslations from '@shopify/polaris/locales/en.json';
-import { AppProvider, Page, Layout, Card, Text, Button, BlockStack, Banner } from '@shopify/polaris';
-import { useState } from 'react';
+import { useState } from "react";
+import Script from "next/script";
+import { AppProvider, Page, Layout, Card, Button, Text, Banner, BlockStack } from "@shopify/polaris";
+import enTranslations from "@shopify/polaris/locales/en.json";
+import "@shopify/polaris/build/esm/styles.css";
 
-export default function ZeroAssertDashboard() {
-  const [status, setStatus] = useState('Engine online. Ready for proof verification.');
-  const [verified, setVerified] = useState(false);
+export default function Home() {
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verificationStatus, setVerificationStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [errorMessage, setErrorMessage] = useState("");
 
-  const runZkVerification = async () => {
-    setStatus('Generating and verifying Zero-Knowledge Proof...');
+  const executeZKP = async () => {
+    setIsVerifying(true);
+    setVerificationStatus('idle');
+    setErrorMessage("");
+
     try {
+      // 1. The browser downloads the cloud keys and computes the proof locally
+      // @ts-ignore
+      const { proof, publicSignals } = await window.snarkjs.groth16.fullProve(
+        { secret: 1, publicHash: 1 }, 
+        "/zkp/circuit.wasm",
+        "/zkp/circuit_final.zkey"
+      );
+
+      // 2. Only the math is sent to the Vercel backend. Raw data never leaves the device.
       const response = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proof: { mock: true }, publicSignals: ['1'] })
+        body: JSON.stringify({ proof, publicSignals }),
       });
+
       const data = await response.json();
-      if (data.verified) {
-        setVerified(true);
-        setStatus(data.message);
+      
+      if (response.ok && data.verified) {
+        console.log("Cryptographic Pipeline Secured:", data.message);
+        setVerificationStatus('success');
       } else {
-        setStatus('Verification failed.');
+        console.error("Verification Rejected:", data.error);
+        setVerificationStatus('error');
+        setErrorMessage(data.error || "Cryptographic proof rejected by server.");
       }
-    } catch (err) {
-      setStatus('Network error during cryptographic handshake.');
+    } catch (error: any) {
+      console.error("Prover Engine Crashed:", error);
+      setVerificationStatus('error');
+      setErrorMessage(error.message || "Local proof generation failed. Ensure snarkjs is loaded.");
+    } finally {
+      setIsVerifying(false);
     }
   };
 
   return (
-    <Script src="[https://unpkg.com/snarkjs@latest/build/snarkjs.min.js](https://unpkg.com/snarkjs@latest/build/snarkjs.min.js)" strategy="beforeInteractive"/>
-    <AppProvider i18n={enTranslations}>
-      <Page title="ZeroAssert Identity Engine">
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h2" variant="headingMd">
-                  Cryptographic Pipeline: Active
-                </Text>
-                <Text as="p">{status}</Text>
-                {verified && (
-                  <Banner tone="success">
-                    <p>Merchant identity securely validated via ZKP. Zero raw data exposed.</p>
-                  </Banner>
-                )}
-                <Button variant="primary" onClick={runZkVerification}>
-                  Execute ZKP Verification
-                  try {
-  // 1. The browser downloads the cloud keys and computes the proof locally
-  // @ts-ignore
-  const { proof, publicSignals } = await window.snarkjs.groth16.fullProve(
-    { secret: 1, publicHash: 1 }, // We will replace these with real Shopify GraphQL data next
-    "/zkp/circuit.wasm",
-    "/zkp/circuit_final.zkey"
-  );
-
-  // 2. Only the math is sent to the Vercel backend. Raw data never leaves the device.
-  const response = await fetch('/api/verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proof, publicSignals }),
-  });
-
-  const data = await response.json();
-  if (data.verified) {
-    console.log("Cryptographic Pipeline Secured:", data.message);
-    // Trigger your Polaris success banner here
-  } else {
-    console.error("Verification Rejected:", data.error);
-  }
-} catch (error) {
-  console.error("Prover Engine Crashed:", error);
-                  }
+    <>
+      {/* Invisible cloud engine injection bypassing Webpack */}
+      <Script src="https://unpkg.com/snarkjs@latest/build/snarkjs.min.js" strategy="beforeInteractive" />
+      
+      <AppProvider i18n={enTranslations}>
+        <Page title="ZeroAssert Identity Engine">
+          <Layout>
+            <Layout.Section>
+              <Card>
+                <BlockStack gap="400">
+                  <Text as="h2" variant="headingMd">
+                    Cryptographic Pipeline: Active
+                  </Text>
                   
-                </Button>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-          
-          <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="200">
-                <Text as="h2" variant="headingSm">
-                  Security Metrics
-                </Text>
-                <Text as="p">Protocol: Groth16 / snarkjs</Text>
-                <Text as="p">Database: Supabase (Encrypted)</Text>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
-      </Page>
-    </AppProvider>
+                  {verificationStatus === 'success' && (
+                    <Banner title="Merchant identity securely validated via ZKP. Zero raw data exposed." tone="success" />
+                  )}
+                  
+                  {verificationStatus === 'error' && (
+                    <Banner title="Verification failed." tone="critical">
+                      <p>{errorMessage}</p>
+                    </Banner>
+                  )}
+
+                  <Button 
+                    variant="primary" 
+                    size="large" 
+                    onClick={executeZKP} 
+                    loading={isVerifying}
+                  >
+                    Execute ZKP Verification
+                  </Button>
+                </BlockStack>
+              </Card>
+            </Layout.Section>
+            
+            <Layout.Section variant="oneThird">
+              <Card>
+                <BlockStack gap="400">
+                  <Text as="h3" variant="headingSm">Security Metrics</Text>
+                  <Text as="p" variant="bodyMd">Protocol: Groth16 / snarkjs</Text>
+                  <Text as="p" variant="bodyMd">Database: Supabase (Encrypted)</Text>
+                </BlockStack>
+              </Card>
+            </Layout.Section>
+          </Layout>
+        </Page>
+      </AppProvider>
+    </>
   );
 }
