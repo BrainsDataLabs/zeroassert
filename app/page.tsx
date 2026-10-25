@@ -1,3 +1,4 @@
+import Script from 'next/script';
 "use client";
 
 import '@shopify/polaris/build/esm/styles.css';
