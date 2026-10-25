@@ -49,6 +49,33 @@ export default function ZeroAssertDashboard() {
                 )}
                 <Button variant="primary" onClick={runZkVerification}>
                   Execute ZKP Verification
+                  try {
+  // 1. The browser downloads the cloud keys and computes the proof locally
+  // @ts-ignore
+  const { proof, publicSignals } = await window.snarkjs.groth16.fullProve(
+    { secret: 1, publicHash: 1 }, // We will replace these with real Shopify GraphQL data next
+    "/zkp/circuit.wasm",
+    "/zkp/circuit_final.zkey"
+  );
+
+  // 2. Only the math is sent to the Vercel backend. Raw data never leaves the device.
+  const response = await fetch('/api/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proof, publicSignals }),
+  });
+
+  const data = await response.json();
+  if (data.verified) {
+    console.log("Cryptographic Pipeline Secured:", data.message);
+    // Trigger your Polaris success banner here
+  } else {
+    console.error("Verification Rejected:", data.error);
+  }
+} catch (error) {
+  console.error("Prover Engine Crashed:", error);
+                  }
+                  
                 </Button>
               </BlockStack>
             </Card>
