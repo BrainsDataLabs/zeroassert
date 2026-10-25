@@ -21,35 +21,42 @@ export default function Home() {
   const [verificationStatus, setVerificationStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState("");
 
-  const executeZKP = async () => {
+    const executeZKP = async () => {
     setIsVerifying(true);
     setVerificationStatus('idle');
     setErrorMessage("");
 
     try {
-      // Extract the live merchant domain from Shopify's App Bridge URL
       const urlParams = new URLSearchParams(window.location.search);
       const liveShopDomain = urlParams.get('shop') || 'standalone-test.myshopify.com';
       const merchantSecret = stringToNumericHash(liveShopDomain);
 
-      // The device computes the proof using the merchant's actual hashed identity
+      // Force absolute URLs to prevent mobile iframe routing failures
+      const wasmPath = window.location.origin + "/zkp/circuit.wasm";
+      const zkeyPath = window.location.origin + "/zkp/circuit_final.zkey";
+
       // @ts-ignore
       const { proof, publicSignals } = await window.snarkjs.groth16.fullProve(
         { secret: merchantSecret, publicHash: 1 }, 
-        "/zkp/circuit.wasm",
-        "/zkp/circuit_final.zkey"
+        wasmPath,
+        zkeyPath
       );
 
-      // We transmit the proof and the raw domain, but NEVER the raw secret
       const response = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ proof, publicSignals, shopDomain: liveShopDomain }),
       });
 
+      // Catch Vercel crashes directly instead of failing silently
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server crashed (${response.status}): ${errorText.substring(0, 60)}`);
+      }
+
       const data = await response.json();
       
-      if (response.ok && data.verified) {
+      if (data.verified) {
         setVerificationStatus('success');
       } else {
         setVerificationStatus('error');
@@ -57,11 +64,12 @@ export default function Home() {
       }
     } catch (error: any) {
       setVerificationStatus('error');
-      setErrorMessage(error.message || "Local proof generation failed. Ensure snarkjs is loaded.");
+      setErrorMessage(error.message || "Pipeline failed. Check network connection.");
     } finally {
       setIsVerifying(false);
     }
   };
+  
 
   return (
     <>
