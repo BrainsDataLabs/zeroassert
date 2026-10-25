@@ -1,1 +1,12 @@
+client_id = "fb50358a84ffd72f88559597c6bfc71"
+name = "ZeroAssert Engine"
+application_url = "https://zeroassert.brainsdata.org"
+embedded = true
 
+[webhooks]
+api_version = "2024-04"
+
+  [webhooks.privacy_compliance]
+  customer_deletion_url = "https://zeroassert.brainsdata.org/api/webhooks/shopify"
+  customer_data_request_url = "https://zeroassert.brainsdata.org/api/webhooks/shopify"
+  shop_deletion_url = "https://zeroassert.brainsdata.org/api/webhooks/shopify"
