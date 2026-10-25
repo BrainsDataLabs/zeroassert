@@ -1,7 +1,7 @@
 name: Compile ZKP Circuit
 
 on:
-  workflow_dispatch: # Allows manual trigger from your phone
+  workflow_dispatch:
 
 jobs:
   forge-cryptography:
@@ -31,20 +31,16 @@ jobs:
           mkdir -p zkp_engine
           cd zkp_engine
           
-          # 1. Write the base identity circuit
-          echo "template IdentityAssert() { signal input secret; signal input publicHash; signal output out; out <== secret * publicHash; } component main = IdentityAssert();" > circuit.circom
+          # Inject strict Pragma declaration to prevent compiler panic
+          echo 'pragma circom 2.0.0; template IdentityAssert() { signal input secret; signal input publicHash; signal output out; out <== secret * publicHash; } component main {public [publicHash]} = IdentityAssert();' > circuit.circom
           
-          # 2. Compile to WebAssembly
           circom circuit.circom --r1cs --wasm --sym
           
-          # 3. Download Polygon Hermez Powers of Tau (Entropy)
           wget https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_12.ptau
           
-          # 4. Generate the Proving Key
           snarkjs groth16 setup circuit.r1cs powersOfTau28_hez_final_12.ptau circuit_0000.zkey
           echo "zeroassert_secure_entropy_generation_9982" | snarkjs zkey contribute circuit_0000.zkey circuit_final.zkey --name="ZeroAssert" -v
           
-          # 5. Extract Verification Key
           snarkjs zkey export verificationkey circuit_final.zkey verification_key.json
           
       - name: Commit Keys to Repository
@@ -57,6 +53,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add public/zkp/circuit.wasm public/zkp/circuit_final.zkey app/api/verify/verification_key.json
-          git commit -m "chore: forge zero-knowledge cryptographic keys"
+          git commit -m "chore: forge real zero-knowledge keys" || echo "Bypassing empty commit lock"
           git push
           
