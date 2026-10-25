@@ -11,6 +11,7 @@ const supabaseAdmin = createClient(
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    // Engine now explicitly catches the live domain sent by the frontend
     const { proof, publicSignals, shopDomain } = body;
 
     let isValidZkp = false;
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
     }
 
     if (isValidZkp) {
-      // Real data integration: writing the live domain to the vault
+      // Binds the real Shopify domain to the database insertion
       const targetDomain = shopDomain || 'unknown-merchant.myshopify.com';
       const liveCommitment = 'zkp_commit_' + Date.now();
       const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
