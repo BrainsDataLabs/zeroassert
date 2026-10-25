@@ -1,3 +1,6 @@
+// LEAN INJECTION: Forces Vercel to drop the cache and run this dynamically on every request
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import * as snarkjs from 'snarkjs';
@@ -21,7 +24,6 @@ export async function POST(req: Request) {
     }
 
     if (isValidZkp) {
-      // Binds the real Shopify domain to the database insertion
       const targetDomain = shopDomain || 'unknown-merchant.myshopify.com';
       const liveCommitment = 'zkp_commit_' + Date.now();
       const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
@@ -37,12 +39,13 @@ export async function POST(req: Request) {
         ]);
 
       if (error) {
-        return NextResponse.json({ verified: false, error: 'Database vault rejected the proof (likely duplicate domain)' }, { status: 500 });
+        return NextResponse.json({ verified: false, error: 'Database vault rejected the proof' }, { status: 500 });
       }
 
+      // Changed the message to verify the cache was destroyed
       return NextResponse.json({ 
         verified: true, 
-        message: 'Live merchant identity securely committed.' 
+        message: 'Live merchant identity secured via dynamic route.' 
       }, { status: 200 });
     } else {
       return NextResponse.json({ verified: false, error: 'Invalid cryptographic proof' }, { status: 400 });
