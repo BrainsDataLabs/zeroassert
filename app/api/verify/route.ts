@@ -24,7 +24,8 @@ export async function POST(req: Request) {
     }
 
     // 2. The Test Bypass (Remove this in actual production)
-    const pipelineTestActive = true; 
+    const pipelineTestActive = false;
+    ; 
 
     if (isValidZkp || pipelineTestActive) {
       const mockShopDomain = 'zkp-live-' + Date.now() + '.myshopify.com';
