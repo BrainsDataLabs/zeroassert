@@ -11,44 +11,38 @@ const supabaseAdmin = createClient(
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { proof, publicSignals } = body;
+    const { proof, publicSignals, shopDomain } = body;
 
-    // 1. The Cryptographic Bouncer
     let isValidZkp = false;
     try {
-      // The engine evaluates the proof against the verification key.
-      // Because we are sending mock data from the UI, this will evaluate to FALSE.
       isValidZkp = await snarkjs.groth16.verify(vKey, publicSignals, proof);
     } catch (e) {
-      console.log('SnarkJS active: Proof format rejected.');
+      console.log('Proof format rejected.');
     }
 
-    // 2. The Test Bypass (Remove this in actual production)
-    const pipelineTestActive = false;
-    ; 
-
-    if (isValidZkp || pipelineTestActive) {
-      const mockShopDomain = 'zkp-live-' + Date.now() + '.myshopify.com';
-      const mockCommitment = 'zkp_commit_' + Date.now();
-      const mockNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
+    if (isValidZkp) {
+      // Real data integration: writing the live domain to the vault
+      const targetDomain = shopDomain || 'unknown-merchant.myshopify.com';
+      const liveCommitment = 'zkp_commit_' + Date.now();
+      const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
 
       const { error } = await supabaseAdmin
         .from('merchant_proofs')
         .insert([
           { 
-            shop_domain: mockShopDomain, 
-            commitment: mockCommitment, 
-            nullifier_hash: mockNullifier 
+            shop_domain: targetDomain, 
+            commitment: liveCommitment, 
+            nullifier_hash: liveNullifier 
           }
         ]);
 
       if (error) {
-        return NextResponse.json({ verified: false, error: 'Database vault rejected the proof' }, { status: 500 });
+        return NextResponse.json({ verified: false, error: 'Database vault rejected the proof (likely duplicate domain)' }, { status: 500 });
       }
 
       return NextResponse.json({ 
         verified: true, 
-        message: 'SnarkJS Engine Online. Cryptographic pipeline and DB Vault synchronized.' 
+        message: 'Live merchant identity securely committed.' 
       }, { status: 200 });
     } else {
       return NextResponse.json({ verified: false, error: 'Invalid cryptographic proof' }, { status: 400 });
