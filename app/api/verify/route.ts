@@ -11,7 +11,6 @@ const supabaseAdmin = createClient(
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    // Engine now explicitly catches the live domain sent by the frontend
     const { proof, publicSignals, shopDomain } = body;
 
     let isValidZkp = false;
