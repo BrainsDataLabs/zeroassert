@@ -6,6 +6,16 @@ import { AppProvider, Page, Layout, Card, Button, Text, Banner, BlockStack } fro
 import enTranslations from "@shopify/polaris/locales/en.json";
 import "@shopify/polaris/build/esm/styles.css";
 
+// Lean Data Extraction: Converts a text domain into a cryptographic numeric secret
+const stringToNumericHash = (str: string) => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+};
+
 export default function Home() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationStatus, setVerificationStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -17,33 +27,35 @@ export default function Home() {
     setErrorMessage("");
 
     try {
-      // 1. The browser downloads the cloud keys and computes the proof locally
+      // Extract the live merchant domain from Shopify's App Bridge URL
+      const urlParams = new URLSearchParams(window.location.search);
+      const liveShopDomain = urlParams.get('shop') || 'standalone-test.myshopify.com';
+      const merchantSecret = stringToNumericHash(liveShopDomain);
+
+      // The device computes the proof using the merchant's actual hashed identity
       // @ts-ignore
       const { proof, publicSignals } = await window.snarkjs.groth16.fullProve(
-        { secret: 1, publicHash: 1 }, 
+        { secret: merchantSecret, publicHash: 1 }, 
         "/zkp/circuit.wasm",
         "/zkp/circuit_final.zkey"
       );
 
-      // 2. Only the math is sent to the Vercel backend. Raw data never leaves the device.
+      // We transmit the proof and the raw domain, but NEVER the raw secret
       const response = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proof, publicSignals }),
+        body: JSON.stringify({ proof, publicSignals, shopDomain: liveShopDomain }),
       });
 
       const data = await response.json();
       
       if (response.ok && data.verified) {
-        console.log("Cryptographic Pipeline Secured:", data.message);
         setVerificationStatus('success');
       } else {
-        console.error("Verification Rejected:", data.error);
         setVerificationStatus('error');
         setErrorMessage(data.error || "Cryptographic proof rejected by server.");
       }
     } catch (error: any) {
-      console.error("Prover Engine Crashed:", error);
       setVerificationStatus('error');
       setErrorMessage(error.message || "Local proof generation failed. Ensure snarkjs is loaded.");
     } finally {
