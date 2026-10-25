@@ -31,6 +31,7 @@ export default function ZeroAssertDashboard() {
   };
 
   return (
+    <Script src="[https://unpkg.com/snarkjs@latest/build/snarkjs.min.js](https://unpkg.com/snarkjs@latest/build/snarkjs.min.js)" strategy="beforeInteractive"/>
     <AppProvider i18n={enTranslations}>
       <Page title="ZeroAssert Identity Engine">
         <Layout>
