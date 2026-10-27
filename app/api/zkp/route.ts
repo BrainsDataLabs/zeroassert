@@ -11,38 +11,48 @@ const supabaseAdmin = createClient(
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { proof, shopDomain } = body;
+    const { proof, shopDomain, orderId } = body;
+    const targetDomain = shopDomain || 'standalone-test.myshopify.com';
 
-    // 1. Core Cryptographic Verification
-    // This function mathematically verifies the proof against the official public keys
-    const isValidZkp = await verify(proof);
+    // 1. BILLING GATEWAY: Check if merchant has prepaid credits
+    const { data: merchantAccount, error: accountError } = await supabaseAdmin
+      .from('merchant_accounts')
+      .select('verification_credits')
+      .eq('shop_domain', targetDomain)
+      .single();
 
-    if (!isValidZkp) {
-      return NextResponse.json({ verified: false, error: 'Cryptographic proof rejected by core protocol.' }, { status: 400 });
+    if (accountError || !merchantAccount) {
+      return NextResponse.json({ verified: false, error: 'Merchant account not found.' }, { status: 403 });
     }
 
-    // 2. Database Vault Lock
-    const targetDomain = shopDomain || 'standalone-test.myshopify.com';
+    if (merchantAccount.verification_credits <= 0) {
+      return NextResponse.json({ verified: false, error: 'Merchant out of verification credits.' }, { status: 402 }); // 402 Payment Required
+    }
+
+    // 2. CRYPTOGRAPHIC VERIFICATION
+    const isValidZkp = await verify(proof);
+    if (!isValidZkp) {
+      return NextResponse.json({ verified: false, error: 'Cryptographic proof rejected.' }, { status: 400 });
+    }
+
+    // 3. DATABASE VAULT LOCK (The Order Shield)
     const liveCommitment = 'zkp_commit_' + Date.now(); 
     const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
 
-    const { error } = await supabaseAdmin
+    const { error: vaultError } = await supabaseAdmin
       .from('buyer_proofs')
-      .insert([
-        { 
-          shop_domain: targetDomain, 
-          commitment: liveCommitment, 
-          nullifier_hash: liveNullifier 
-        }
-      ]);
+      .insert([{ shop_domain: targetDomain, order_id: orderId, commitment: liveCommitment, nullifier_hash: liveNullifier }]);
 
-    if (error) {
-      return NextResponse.json({ verified: false, error: 'Database vault rejected the proof (Possible duplicate)' }, { status: 500 });
+    if (vaultError) {
+      return NextResponse.json({ verified: false, error: 'Vault rejected proof.' }, { status: 500 });
     }
 
-    return NextResponse.json({ verified: true, message: 'Identity verified and secured.' }, { status: 200 });
+    // 4. LEDGER DEDUCTION (Charge the merchant 1 credit)
+    await supabaseAdmin.rpc('decrement_credits', { target_shop: targetDomain });
+
+    return NextResponse.json({ verified: true, message: 'Identity verified, secured, and billed.' }, { status: 200 });
 
   } catch (error) {
-    return NextResponse.json({ error: 'Cryptographic pipeline crashed' }, { status: 500 });
+    return NextResponse.json({ error: 'Pipeline crashed' }, { status: 500 });
   }
 }
