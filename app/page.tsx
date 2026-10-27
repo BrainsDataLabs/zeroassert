@@ -41,106 +41,114 @@ export default function CheckoutVerificationGate() {
 
   return (
     <div style={{
-      maxWidth: '420px',
-      margin: '32px auto',
-      padding: '24px',
-      borderRadius: '16px',
-      backgroundColor: '#ffffff',
-      boxShadow: '0 4px 24px rgba(0, 0, 0, 0.08)',
-      border: '1px solid #eaeaea',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      boxSizing: 'border-box'
+      minHeight: '100vh',
+      backgroundColor: '#f8fafc',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '16px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     }}>
-      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#111827', margin: '0 0 8px 0' }}>
+      <div style={{
+        maxWidth: '400px',
+        width: '100%',
+        backgroundColor: '#ffffff',
+        borderRadius: '16px',
+        padding: '24px',
+        boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04)',
+        border: '1px solid #e2e8f0',
+        textAlign: 'center'
+      }}>
+        <h2 style={{
+          fontSize: '20px',
+          fontWeight: '700',
+          color: '#0f172a',
+          margin: '0 0 8px 0'
+        }}>
           Age Verification Required
         </h2>
-        <p style={{ fontSize: '13px', color: '#6b7280', margin: '0', lineHeight: '1.4' }}>
+        
+        <p style={{
+          fontSize: '13px',
+          color: '#64748b',
+          lineHeight: '1.5',
+          margin: '0 0 20px 0'
+        }}>
           Restricted goods detected. Please verify your age securely via ZeroAssert before selecting your payment method.
         </p>
-      </div>
 
-      {!isVerified ? (
+        {!isVerified ? (
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+            backgroundColor: '#f1f5f9',
+            borderRadius: '12px',
+            marginBottom: '20px'
+          }}>
+            <LogInWithAnonAadhaar useTestAadhaar={false} />
+            {anonAadhaar.status === 'logged-in' && (
+              <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', marginTop: '10px' }}>
+                Processing zero-knowledge proof...
+              </p>
+            )}
+          </div>
+        ) : (
+          <div style={{
+            backgroundColor: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            borderRadius: '12px',
+            padding: '12px',
+            marginBottom: '20px'
+          }}>
+            <p style={{ fontSize: '13px', fontWeight: '600', color: '#166534', margin: '0 0 2px 0' }}>
+              ✅ Age Verified Successfully (18+)
+            </p>
+            <p style={{ fontSize: '11px', color: '#15803d', margin: 0 }}>
+              Payment gateway unlocked.
+            </p>
+          </div>
+        )}
+
+        {/* Payment Gate: Unlocks automatically when isVerified is true */}
         <div style={{
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '16px 0',
-          gap: '8px'
+          gap: '10px',
+          opacity: isVerified ? 1 : 0.4,
+          pointerEvents: isVerified ? 'auto' : 'none',
+          transition: 'opacity 0.2s ease'
         }}>
-          <div style={{ display: 'inline-block' }}>
-            <LogInWithAnonAadhaar useTestAadhaar={false} />
-          </div>
-          {anonAadhaar.status === 'logged-in' && (
-            <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', margin: '0' }}>
-              Processing zero-knowledge proof...
-            </p>
-          )}
-        </div>
-      ) : (
-        <div style={{
-          backgroundColor: '#ecfdf5',
-          border: '1px solid #a7f3d0',
-          borderRadius: '8px',
-          padding: '12px',
-          textAlign: 'center',
-          marginBottom: '16px'
-        }}>
-          <p style={{ fontSize: '13px', fontWeight: '600', color: '#065f46', margin: '0 0 2px 0' }}>
-            Age Verified Successfully (18+)
-          </p>
-          <p style={{ fontSize: '11px', color: '#047857', margin: '0' }}>
-            Payment methods unlocked.
-          </p>
-        </div>
-      )}
-
-      {/* Payment Gateway Buttons */}
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px',
-        marginTop: '12px',
-        opacity: isVerified ? 1 : 0.35,
-        pointerEvents: isVerified ? 'auto' : 'none',
-        transition: 'opacity 0.2s ease'
-      }}>
-        <button 
-          disabled={!isVerified}
-          style={{
+          <button style={{
             width: '100%',
-            backgroundColor: '#000000',
+            backgroundColor: '#0f172a',
             color: '#ffffff',
             padding: '12px 16px',
             borderRadius: '8px',
             fontSize: '14px',
             fontWeight: '600',
             border: 'none',
-            cursor: isVerified ? 'pointer' : 'not-allowed',
-            outline: 'none'
-          }}
-        >
-          Pay via UPI (Instant Intent)
-        </button>
-
-        <button 
-          disabled={!isVerified}
-          style={{
+            cursor: isVerified ? 'pointer' : 'not-allowed'
+          }}>
+            Pay via UPI (Instant Intent)
+          </button>
+          
+          <button style={{
             width: '100%',
-            backgroundColor: '#f3f4f6',
-            color: '#1f2937',
+            backgroundColor: '#f8fafc',
+            color: '#334155',
             padding: '12px 16px',
             borderRadius: '8px',
             fontSize: '14px',
             fontWeight: '600',
-            border: '1px solid #e5e7eb',
-            cursor: isVerified ? 'pointer' : 'not-allowed',
-            outline: 'none'
-          }}
-        >
-          Pay via Credit / Debit Card
-        </button>
+            border: '1px solid #cbd5e1',
+            cursor: isVerified ? 'pointer' : 'not-allowed'
+          }}>
+            Pay via Credit / Debit Card
+          </button>
+        </div>
       </div>
     </div>
   );
