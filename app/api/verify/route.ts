@@ -1,4 +1,3 @@
-// LEAN INJECTION: Forces Vercel to drop the cache and run this dynamically on every request
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
@@ -9,13 +8,31 @@ const supabase = createClient(
 
 export async function POST(request: Request) {
   try {
-    const { checkout_id, age_verified } = await request.json();
+    const { checkout_id, age_verified, shop_domain } = await request.json();
 
     if (!checkout_id) {
       return NextResponse.json({ error: 'Missing checkout identifier' }, { status: 400 });
     }
 
-    // Check existing attempts for rate-limiting
+    // Default test shop domain if none provided
+    const targetShop = shop_domain || 'standalone-test.myshopify.com';
+
+    // 1. Check merchant credits before allowing verification
+    const { data: merchant, error: merchantError } = await supabase
+      .from('merchant_accounts')
+      .select('verification_credits')
+      .eq('shop_domain', targetShop)
+      .single();
+
+    if (merchantError || !merchant) {
+      return NextResponse.json({ error: 'Merchant account not found' }, { status: 404 });
+    }
+
+    if (merchant.verification_credits <= 0) {
+      return NextResponse.json({ error: 'Merchant verification credits exhausted.' }, { status: 403 });
+    }
+
+    // 2. Check existing verification attempts for rate-limiting
     const { data: existing } = await supabase
       .from('age_verifications')
       .select('attempts, age_verified')
@@ -29,8 +46,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // Upsert ephemeral token record
-    const { error } = await supabase
+    // 3. If verification is successful, decrement merchant credits by 1
+    if (age_verified) {
+      const { error: updateError } = await supabase
+        .from('merchant_accounts')
+        .update({ verification_credits: merchant.verification_credits - 1 })
+        .eq('shop_domain', targetShop);
+
+      if (updateError) throw updateError;
+    }
+
+    // 4. Upsert ephemeral token record
+    const { error: logError } = await supabase
       .from('age_verifications')
       .upsert({
         checkout_id,
@@ -39,9 +66,13 @@ export async function POST(request: Request) {
         created_at: new Date().toISOString(),
       }, { onConflict: 'checkout_id' });
 
-    if (error) throw error;
+    if (logError) throw logError;
 
-    return NextResponse.json({ success: true, age_verified });
+    return NextResponse.json({ 
+      success: true, 
+      age_verified, 
+      remaining_credits: merchant.verification_credits - (age_verified ? 1 : 0) 
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
