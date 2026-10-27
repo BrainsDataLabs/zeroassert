@@ -23,7 +23,7 @@ export default function CheckoutVerificationGate() {
       const res = await fetch('/api/zkp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ checkout_id: checkoutId, age_verified: status }),
+        body: JSON.stringify({ checkout_id: checkoutId, age_verified: status, shop_domain: 'standalone-test.myshopify.com'  }),
       });
       const data = await res.json();
       if (data.success && data.age_verified) {
