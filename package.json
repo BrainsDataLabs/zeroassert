@@ -15,7 +15,7 @@
     "@shopify/shopify-api": "^9.0.0",
     "@shopify/shopify-app-remix": "^3.0.0",
     "anon-aadhaar-react": "latest",
-    "@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.39.0",
     "@anon-aadhaar/core": "^2.0.0",
     "@anon-aadhaar/react": "^2.0.0"
     
