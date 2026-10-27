@@ -1,56 +1,48 @@
 // LEAN INJECTION: Forces Vercel to drop the cache and run this dynamically on every request
-export const dynamic = 'force-dynamic';
-
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import * as snarkjs from 'snarkjs';
-import vKey from './verification_key.json';
 
-const supabaseAdmin = createClient(
+const supabase = createClient(
   process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    const body = await req.json();
-    const { proof, publicSignals, shopDomain } = body;
+    const { checkout_id, age_verified } = await request.json();
 
-    let isValidZkp = false;
-    try {
-      isValidZkp = await snarkjs.groth16.verify(vKey, publicSignals, proof);
-    } catch (e) {
-      console.log('Proof format rejected.');
+    if (!checkout_id) {
+      return NextResponse.json({ error: 'Missing checkout identifier' }, { status: 400 });
     }
 
-    if (isValidZkp) {
-      const targetDomain = shopDomain || 'unknown-merchant.myshopify.com';
-      const liveCommitment = 'zkp_commit_' + Date.now();
-      const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
+    // Check existing attempts for rate-limiting
+    const { data: existing } = await supabase
+      .from('age_verifications')
+      .select('attempts, age_verified')
+      .eq('checkout_id', checkout_id)
+      .single();
 
-      const { error } = await supabaseAdmin
-        .from('merchant_proofs')
-        .insert([
-          { 
-            shop_domain: targetDomain, 
-            commitment: liveCommitment, 
-            nullifier_hash: liveNullifier 
-          }
-        ]);
-
-      if (error) {
-        return NextResponse.json({ verified: false, error: 'Database vault rejected the proof' }, { status: 500 });
-      }
-
-      // Changed the message to verify the cache was destroyed
-      return NextResponse.json({ 
-        verified: true, 
-        message: 'Live merchant identity secured via dynamic route.' 
-      }, { status: 200 });
-    } else {
-      return NextResponse.json({ verified: false, error: 'Invalid cryptographic proof' }, { status: 400 });
+    if (existing && existing.attempts >= 3 && !existing.age_verified) {
+      return NextResponse.json(
+        { error: 'Maximum verification attempts exceeded for this session.' },
+        { status: 429 }
+      );
     }
-  } catch (error) {
-    return NextResponse.json({ error: 'Cryptographic pipeline crashed' }, { status: 500 });
+
+    // Upsert ephemeral token record
+    const { error } = await supabase
+      .from('age_verifications')
+      .upsert({
+        checkout_id,
+        age_verified: Boolean(age_verified),
+        attempts: existing ? existing.attempts + 1 : 1,
+        created_at: new Date().toISOString(),
+      }, { onConflict: 'checkout_id' });
+
+    if (error) throw error;
+
+    return NextResponse.json({ success: true, age_verified });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
