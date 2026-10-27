@@ -1,62 +1,79 @@
-export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { verify } from '@anon-aadhaar/core';
 
-const supabaseAdmin = createClient(
+const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_KEY!
 );
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    const body = await req.json();
-    const { proof, shopDomain, orderId } = body;
-    const targetDomain = shopDomain || 'standalone-test.myshopify.com';
+    const { checkout_id, age_verified, shop_domain } = await request.json();
 
-    // 1. BILLING GATEWAY: Check if merchant has prepaid credits
-    const { data: merchantAccount, error: accountError } = await supabaseAdmin
+    if (!checkout_id) {
+      return NextResponse.json({ error: 'Missing checkout identifier' }, { status: 400 });
+    }
+
+    // Default test shop domain if none provided
+    const targetShop = shop_domain || 'standalone-test.myshopify.com';
+
+    // 1. Check merchant credits before allowing verification
+    const { data: merchant, error: merchantError } = await supabase
       .from('merchant_accounts')
       .select('verification_credits')
-      .eq('shop_domain', targetDomain)
+      .eq('shop_domain', targetShop)
       .single();
 
-    if (accountError || !merchantAccount) {
-      return NextResponse.json({ verified: false, error: 'Merchant account not found.' }, { status: 403 });
+    if (merchantError || !merchant) {
+      return NextResponse.json({ error: 'Merchant account not found' }, { status: 404 });
     }
 
-    if (merchantAccount.verification_credits <= 0) {
-      return NextResponse.json({ verified: false, error: 'Merchant out of verification credits.' }, { status: 402 }); // 402 Payment Required
+    if (merchant.verification_credits <= 0) {
+      return NextResponse.json({ error: 'Merchant verification credits exhausted.' }, { status: 403 });
     }
 
-    // 2. CRYPTOGRAPHIC VERIFICATION
-    const isValidZkp = await verify(proof);
-    if (!isValidZkp) {
-      return NextResponse.json({ verified: false, error: 'Cryptographic proof rejected.' }, { status: 400 });
+    // 2. Check existing verification attempts for rate-limiting
+    const { data: existing } = await supabase
+      .from('age_verifications')
+      .select('attempts, age_verified')
+      .eq('checkout_id', checkout_id)
+      .single();
+
+    if (existing && existing.attempts >= 3 && !existing.age_verified) {
+      return NextResponse.json(
+        { error: 'Maximum verification attempts exceeded for this session.' },
+        { status: 429 }
+      );
     }
 
-    // 3. DATABASE VAULT LOCK (The Order Shield)
-    const liveCommitment = 'zkp_commit_' + Date.now(); 
-    const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
+    // 3. If verification is successful, decrement merchant credits by 1
+    if (age_verified) {
+      const { error: updateError } = await supabase
+        .from('merchant_accounts')
+        .update({ verification_credits: merchant.verification_credits - 1 })
+        .eq('shop_domain', targetShop);
 
-    const { error: vaultError } = await supabaseAdmin
-      .from('buyer_proofs')
-      .insert([{ shop_domain: targetDomain, order_id: orderId, commitment: liveCommitment, nullifier_hash: liveNullifier }]);
-
-        if (vaultError) {
-      return NextResponse.json({ 
-        verified: false, 
-        error: `Supabase Error: ${vaultError.message} | Details: ${vaultError.details || 'None'}` 
-      }, { status: 500 });
+      if (updateError) throw updateError;
     }
 
+    // 4. Upsert ephemeral token record
+    const { error: logError } = await supabase
+      .from('age_verifications')
+      .upsert({
+        checkout_id,
+        age_verified: Boolean(age_verified),
+        attempts: existing ? existing.attempts + 1 : 1,
+        created_at: new Date().toISOString(),
+      }, { onConflict: 'checkout_id' });
 
-    // 4. LEDGER DEDUCTION (Charge the merchant 1 credit)
-    await supabaseAdmin.rpc('decrement_credits', { target_shop: targetDomain });
+    if (logError) throw logError;
 
-    return NextResponse.json({ verified: true, message: 'Identity verified, secured, and billed.' }, { status: 200 });
-
-  } catch (error) {
-    return NextResponse.json({ error: 'Pipeline crashed' }, { status: 500 });
+    return NextResponse.json({ 
+      success: true, 
+      age_verified, 
+      remaining_credits: merchant.verification_credits - (age_verified ? 1 : 0) 
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
