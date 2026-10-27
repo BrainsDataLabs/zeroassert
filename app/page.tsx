@@ -1,68 +1,73 @@
-"use client";
-import { useEffect, useState } from "react";
-import { AnonAadhaarProvider, LogInWithAnonAadhaar, useAnonAadhaar } from "@anon-aadhaar/react";
+'use client';
 
-function VerificationLogic() {
+import { useState, useEffect } from 'react';
+import { AnonAadhaarProof, LogInWithAnonAadhaar, useAnonAadhaar } from '@anon-aadhaar/react';
+
+export default function CheckoutVerificationGate() {
   const [anonAadhaar] = useAnonAadhaar();
-  const [statusMessage, setStatusMessage] = useState("");
+  const [isVerified, setIsVerified] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // Mock checkout session ID passed from Shopify / E-commerce state
+  const checkoutId = "chk_live_98234710923"; 
 
   useEffect(() => {
-    if (anonAadhaar.status === "logged-in") {
-      setStatusMessage("Proof generated locally. Securing to vault...");
-      
-      // Extract the merchant's domain (Shopify or Standalone)
-      const urlParams = new URLSearchParams(window.location.search);
-      const shopDomain = urlParams.get('shop') || 'standalone-merchant';
-      const orderId = urlParams.get('order') || 'test-order-999';
-      fetch("/api/zkp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          proof: anonAadhaar.anonAadhaarProofs,
-          shopDomain: shopDomain,
-          orderId: orderId
-        })
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (data.verified) {
-          setStatusMessage("✅ Merchant identity securely validated & locked in vault.");
-        } else {
-          setStatusMessage("❌ Vault rejected: " + data.error);
-        }
-      })
-      .catch(() => setStatusMessage("❌ Network error connecting to vault."));
+    if (anonAadhaar.status === 'logged-in') {
+      verifyAndSyncBackend(true);
     }
-  }, [anonAadhaar]);
+  }, [anonAadhaar.status]);
+
+  const verifyAndSyncBackend = async (status: boolean) => {
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/zkp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checkout_id: checkoutId, age_verified: status }),
+      });
+      const data = await res.json();
+      if (data.success && data.age_verified) {
+        setIsVerified(true);
+      }
+    } catch (err) {
+      console.error('Backend sync failed:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
-      <LogInWithAnonAadhaar nullifierSeed={1234} />
-      {statusMessage && (
-        <div style={{ padding: '15px', background: '#e6ffe6', color: '#006600', borderRadius: '8px', fontWeight: 'bold', textAlign: 'center', border: '1px solid #00cc00' }}>
-          {statusMessage}
+    <div className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md space-y-4 border border-gray-100">
+      <div className="text-center">
+        <h2 className="text-xl font-bold text-gray-900">Age Verification Required</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Restricted goods detected. Please verify your age securely via ZeroAssert before selecting your payment method.
+        </p>
+      </div>
+
+      {!isVerified ? (
+        <div className="flex flex-col items-center space-y-3 pt-2">
+          <LogInWithAnonAadhaar useTestAadhaar={false} />
+          {anonAadhaar.status === 'logged-in' && (
+            <p className="text-xs text-indigo-600 font-medium">Processing zero-knowledge proof...</p>
+          )}
+        </div>
+      ) : (
+        <div className="bg-green-50 border border-green-200 p-3 rounded-lg text-center">
+          <p className="text-sm font-semibold text-green-800">✅ Age Verified Successfully (18+)</p>
+          <p className="text-xs text-green-600 mt-0.5">Payment gateway unlocked.</p>
         </div>
       )}
+
+      {/* Payment Gateway Gate */}
+      <div className={`space-y-2 pt-4 transition-opacity ${isVerified ? 'opacity-100 pointer-events-auto' : 'opacity-40 pointer-events-none'}`}>
+        <button className="w-full bg-black text-white py-3 rounded-lg font-medium hover:bg-gray-800 transition">
+          Pay via UPI (Instant Intent)
+        </button>
+        <button className="w-full bg-gray-100 text-gray-800 py-3 rounded-lg font-medium hover:bg-gray-200 transition">
+          Pay via Credit / Debit Card
+        </button>
+      </div>
     </div>
-  );
-}
-
-export default function Home() {
-  return (
-    // We set _useTestAadhaar to true so you can test it right now with dummy data
-    <AnonAadhaarProvider _useTestAadhaar={true}>
-      <main style={{ maxWidth: '600px', margin: '0 auto', padding: '40px', fontFamily: 'system-ui, sans-serif' }}>
-        <h1 style={{ fontSize: '24px', borderBottom: '2px solid #000', paddingBottom: '10px' }}>ZeroAssert Identity Engine</h1>
-        <p style={{ color: '#555', marginBottom: '30px' }}>Verify your merchant identity via Zero-Knowledge Proofs. Zero raw PII is stored.</p>
-        
-        <div style={{ padding: '30px', border: '1px solid #eaeaea', borderRadius: '12px', background: '#fafafa', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
-          <VerificationLogic />
-        </div>
-
-        <div style={{ marginTop: '40px', textAlign: 'center' }}>
-          <a href="/privacy" target="_blank" style={{ color: '#005bd3', textDecoration: 'none', fontSize: '14px', fontWeight: '500' }}>Read our Zero-Liability Privacy Policy</a>
-        </div>
-      </main>
-    </AnonAadhaarProvider>
   );
 }
