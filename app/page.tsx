@@ -7,12 +7,15 @@ export default function CheckoutVerificationGate() {
   const [anonAadhaar] = useAnonAadhaar();
   const [isVerified, setIsVerified] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
   const checkoutId = "chk_live_session_9823"; 
 
   useEffect(() => {
     if (anonAadhaar.status === 'logged-in') {
       verifyAndSyncBackend(true);
+    } else if (anonAadhaar.status === 'logging-in') {
+      setErrorMsg(null);
     }
   }, [anonAadhaar.status]);
 
@@ -31,39 +34,44 @@ export default function CheckoutVerificationGate() {
       const data = await res.json();
       if (data.success && data.age_verified) {
         setIsVerified(true);
+      } else if (data.error) {
+        setErrorMsg(data.error);
       }
-    } catch (err) {
-      console.error('Backend sync failed:', err);
+    } catch (err: any) {
+      setErrorMsg('Network error verifying proof. Please retry.');
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
+    <main style={{
+      minHeight: '100dvh',
       backgroundColor: '#f8fafc',
       display: 'flex',
+      flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: 'center',
-      padding: '16px',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+      justifyContent: 'flex-start',
+      padding: '24px 16px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      boxSizing: 'border-box'
     }}>
       <div style={{
-        maxWidth: '400px',
+        maxWidth: '420px',
         width: '100%',
         backgroundColor: '#ffffff',
         borderRadius: '16px',
-        padding: '24px',
-        boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04)',
+        padding: '24px 20px',
+        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
         border: '1px solid #e2e8f0',
         textAlign: 'center'
       }}>
         <h2 style={{
-          fontSize: '20px',
+          fontSize: '19px',
           fontWeight: '700',
           color: '#0f172a',
-          margin: '0 0 8px 0'
+          margin: '0 0 8px 0',
+          letterSpacing: '-0.3px'
         }}>
           Age Verification Required
         </h2>
@@ -71,11 +79,25 @@ export default function CheckoutVerificationGate() {
         <p style={{
           fontSize: '13px',
           color: '#64748b',
-          lineHeight: '1.5',
+          lineHeight: '1.4',
           margin: '0 0 20px 0'
         }}>
           Restricted goods detected. Please verify your age securely via ZeroAssert before selecting your payment method.
         </p>
+
+        {errorMsg && (
+          <div style={{
+            backgroundColor: '#fef2f2',
+            border: '1px solid #fecaca',
+            color: '#991b1b',
+            fontSize: '12px',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            marginBottom: '16px'
+          }}>
+            {errorMsg}
+          </div>
+        )}
 
         {!isVerified ? (
           <div style={{
@@ -83,15 +105,20 @@ export default function CheckoutVerificationGate() {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '16px',
-            backgroundColor: '#f1f5f9',
+            padding: '20px 16px',
+            backgroundColor: '#f8fafc',
+            border: '1px dashed #cbd5e1',
             borderRadius: '12px',
             marginBottom: '20px'
           }}>
-            <LogInWithAnonAadhaar useTestAadhaar={false} />
-            {anonAadhaar.status === 'logged-in' && (
-              <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', marginTop: '10px' }}>
-                Processing zero-knowledge proof...
+            <LogInWithAnonAadhaar 
+              nullifierSeed={1234}
+              fieldsToReveal={['revealAgeAbove18']}
+              useTestAadhaar={true}
+            />
+            {anonAadhaar.status === 'logging-in' && (
+              <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', marginTop: '12px' }}>
+                Computing zero-knowledge proof locally...
               </p>
             )}
           </div>
@@ -125,7 +152,7 @@ export default function CheckoutVerificationGate() {
             width: '100%',
             backgroundColor: '#0f172a',
             color: '#ffffff',
-            padding: '12px 16px',
+            padding: '12px',
             borderRadius: '8px',
             fontSize: '14px',
             fontWeight: '600',
@@ -137,9 +164,9 @@ export default function CheckoutVerificationGate() {
           
           <button style={{
             width: '100%',
-            backgroundColor: '#f8fafc',
+            backgroundColor: '#ffffff',
             color: '#334155',
-            padding: '12px 16px',
+            padding: '12px',
             borderRadius: '8px',
             fontSize: '14px',
             fontWeight: '600',
@@ -150,6 +177,6 @@ export default function CheckoutVerificationGate() {
           </button>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
