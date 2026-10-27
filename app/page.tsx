@@ -13,13 +13,14 @@ function VerificationLogic() {
       // Extract the merchant's domain (Shopify or Standalone)
       const urlParams = new URLSearchParams(window.location.search);
       const shopDomain = urlParams.get('shop') || 'standalone-merchant';
-
+      const orderId = urlParams.get('order') || 'test-order-999';
       fetch("/api/zkp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           proof: anonAadhaar.anonAadhaarProofs,
-          shopDomain: shopDomain
+          shopDomain: shopDomain,
+          orderId: orderId
         })
       })
       .then(res => res.json())
