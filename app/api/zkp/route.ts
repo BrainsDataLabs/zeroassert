@@ -14,7 +14,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing checkout identifier' }, { status: 400 });
     }
 
-    // Default test shop domain if none provided
     const targetShop = shop_domain || 'standalone-test.myshopify.com';
 
     // 1. Check merchant credits before allowing verification
