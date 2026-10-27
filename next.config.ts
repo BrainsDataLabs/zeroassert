@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  webpack: (config: any, { isServer }) => {
+  webpack: (config: any, { isServer }: any) => {
     // Fixes npm packages that depend on 'fs' module
     if (!isServer) {
       config.resolve.fallback = {
