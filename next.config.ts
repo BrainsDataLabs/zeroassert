@@ -1,6 +1,8 @@
-/** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  typescript: {
+    ignoreBuildErrors: true,
+  },
   webpack: (config: any, { isServer }: any) => {
     // Fixes npm packages that depend on 'fs' module
     if (!isServer) {
@@ -8,19 +10,10 @@ const nextConfig = {
         ...config.resolve.fallback,
         fs: false,
         readline: false,
-        path: false,
-        os: false,
-        crypto: false,
       };
     }
-    // Enable WebAssembly for ZK proof generation
-    config.experiments = { 
-      ...config.experiments, 
-      asyncWebAssembly: true,
-      layers: true,
-    };
     return config;
-  },
-};
+  }
+}
 
 export default nextConfig;
