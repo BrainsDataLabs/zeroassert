@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     const liveNullifier = 'zkp_nullifier_' + Math.random().toString(36).substring(2, 15);
 
     const { error } = await supabaseAdmin
-      .from('merchant_proofs')
+      .from('buyer_proofs')
       .insert([
         { 
           shop_domain: targetDomain, 
