@@ -43,9 +43,13 @@ export async function POST(req: Request) {
       .from('buyer_proofs')
       .insert([{ shop_domain: targetDomain, order_id: orderId, commitment: liveCommitment, nullifier_hash: liveNullifier }]);
 
-    if (vaultError) {
-      return NextResponse.json({ verified: false, error: 'Vault rejected proof.' }, { status: 500 });
+        if (vaultError) {
+      return NextResponse.json({ 
+        verified: false, 
+        error: `Supabase Error: ${vaultError.message} | Details: ${vaultError.details || 'None'}` 
+      }, { status: 500 });
     }
+
 
     // 4. LEDGER DEDUCTION (Charge the merchant 1 credit)
     await supabaseAdmin.rpc('decrement_credits', { target_shop: targetDomain });
