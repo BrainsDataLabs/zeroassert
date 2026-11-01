@@ -300,7 +300,7 @@ export default function CheckoutVerificationGate() {
                   <LogInWithAnonAadhaar 
                     nullifierSeed={1234}
                     fieldsToReveal={['revealAgeAbove18']}
-                    useTestAadhaar={true}
+                    useTestAadhaar={false}
                   />
                   <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '10px' }}>
                     Upload an e-Aadhaar QR screenshot or PDF.
