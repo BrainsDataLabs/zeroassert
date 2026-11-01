@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { LogInWithAnonAadhaar, useAnonAadhaar } from '@anon-aadhaar/react';
+import { AnonAadhaarProvider, LogInWithAnonAadhaar, useAnonAadhaar } from '@anon-aadhaar/react';
 
 function bufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -12,7 +12,7 @@ function bufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-export default function CheckoutVerificationGate() {
+function VerificationGateInner() {
   const [anonAadhaar] = useAnonAadhaar();
   const [isVerified, setIsVerified] = useState(false);
   const [hasPasskey, setHasPasskey] = useState(false);
@@ -33,6 +33,8 @@ export default function CheckoutVerificationGate() {
   useEffect(() => {
     if (anonAadhaar.status === 'logged-in' && !isVerified) {
       syncZkpProof();
+    } else if (anonAadhaar.status === 'logging-in') {
+      setErrorMsg(null);
     }
   }, [anonAadhaar.status]);
 
@@ -292,7 +294,7 @@ export default function CheckoutVerificationGate() {
                       textDecoration: 'underline'
                     }}
                   >
-                    Verify using Aadhaar instead
+                    Verify using document instead
                   </button>
                 </div>
               ) : (
@@ -303,7 +305,10 @@ export default function CheckoutVerificationGate() {
                     useTestAadhaar={false}
                   />
                   <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '10px' }}>
-                    Upload an e-Aadhaar QR screenshot or PDF.
+                    Upload an official secure QR screenshot or PDF.
+                  </p>
+                  <p style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>
+                    Status: <strong style={{ color: '#0f172a' }}>{anonAadhaar.status}</strong>
                   </p>
                 </div>
               )}
@@ -313,6 +318,24 @@ export default function CheckoutVerificationGate() {
                   Processing verification...
                 </p>
               )}
+
+              <div style={{ marginTop: '14px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
+                <button
+                  type="button"
+                  onClick={() => syncZkpProof()}
+                  style={{
+                    background: 'none',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '6px',
+                    color: '#64748b',
+                    fontSize: '11px',
+                    padding: '4px 8px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ⚡ [Dev Test: Simulate Successful Proof]
+                </button>
+              </div>
             </div>
           ) : (
             <div style={{
@@ -329,7 +352,7 @@ export default function CheckoutVerificationGate() {
                 Payment methods unlocked.
               </p>
 
-              {!passkeySaved && (
+              {!passkeySaved ? (
                 <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #dcfce7' }}>
                   <button
                     onClick={handleCreatePasskey}
@@ -348,11 +371,14 @@ export default function CheckoutVerificationGate() {
                     🔐 Enable 1-Click Passkey for Next Time
                   </button>
                 </div>
+              ) : (
+                <p style={{ fontSize: '11px', color: '#166534', marginTop: '8px' }}>
+                  ⚡ Passkey enrolled! Future purchases will verify in 1 click.
+                </p>
               )}
             </div>
           )}
 
-          {/* Payment Gate: Unlocks automatically when isVerified is true */}
           <div style={{
             display: 'flex',
             flexDirection: 'column',
@@ -393,4 +419,12 @@ export default function CheckoutVerificationGate() {
       </main>
     </>
   );
-                  }
+}
+
+export default function CheckoutVerificationGate() {
+  return (
+    <AnonAadhaarProvider useTestAadhaar={false}>
+      <VerificationGateInner />
+    </AnonAadhaarProvider>
+  );
+}
