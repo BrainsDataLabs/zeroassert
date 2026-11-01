@@ -1,82 +1,197 @@
-
 'use client';
 
 import { useState, useEffect } from 'react';
 import { LogInWithAnonAadhaar, useAnonAadhaar } from '@anon-aadhaar/react';
 
+function bufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
 export default function CheckoutVerificationGate() {
   const [anonAadhaar] = useAnonAadhaar();
   const [isVerified, setIsVerified] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [hasPasskey, setHasPasskey] = useState(false);
+  const [passkeySaved, setPasskeySaved] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  
-  const checkoutId = "chk_live_session_9823"; 
+
+  const checkoutId = "chk_live_session_9823";
+  const shopDomain = "standalone-test.myshopify.com";
 
   useEffect(() => {
-    if (anonAadhaar.status === 'logged-in') {
-      verifyAndSyncBackend(true);
-    } else if (anonAadhaar.status === 'logging-in') {
-      setErrorMsg(null);
+    const savedCredId = localStorage.getItem('zeroassert_passkey_id');
+    if (savedCredId) {
+      setHasPasskey(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (anonAadhaar.status === 'logged-in' && !isVerified) {
+      syncZkpProof();
     }
   }, [anonAadhaar.status]);
 
-  const verifyAndSyncBackend = async (status: boolean) => {
-    setIsLoading(true);
+  const syncZkpProof = async () => {
+    setLoading(true);
+    setErrorMsg(null);
     try {
       const res = await fetch('/api/zkp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          checkout_id: checkoutId, 
-          age_verified: status,
-          shop_domain: 'standalone-test.myshopify.com'
+        body: JSON.stringify({
+          checkout_id: checkoutId,
+          age_verified: true,
+          shop_domain: shopDomain
         }),
       });
       const data = await res.json();
       if (data.success && data.age_verified) {
         setIsVerified(true);
-      } else if (data.error) {
-        setErrorMsg(data.error);
+      } else {
+        setErrorMsg(data.error || 'Backend verification failed.');
       }
-    } catch (err: any) {
-      setErrorMsg('Verification failed. Please retry.');
+    } catch {
+      setErrorMsg('Network error connecting to verification engine.');
     } finally {
-      setIsLoading(false);
+      setLoading(false);
+    }
+  };
+
+  const handleCreatePasskey = async () => {
+    if (!window.PublicKeyCredential) {
+      setErrorMsg('Biometric Passkeys are not supported on this browser.');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+      const userId = new Uint8Array(16);
+      crypto.getRandomValues(userId);
+
+      const credential = (await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: 'ZeroAssert' },
+          user: {
+            id: userId,
+            name: 'anonymous_buyer',
+            displayName: 'Verified Buyer'
+          },
+          pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+          authenticatorSelection: {
+            authenticatorAttachment: 'platform',
+            userVerification: 'required'
+          },
+          timeout: 60000
+        }
+      })) as PublicKeyCredential;
+
+      if (credential) {
+        const rawId = bufferToBase64(credential.rawId);
+        const res = await fetch('/api/passkey', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'register',
+            credential_id: rawId,
+            public_key: 'platform_authenticator_hardware_attested',
+            checkout_id: checkoutId,
+            shop_domain: shopDomain
+          })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          localStorage.setItem('zeroassert_passkey_id', rawId);
+          setPasskeySaved(true);
+        } else {
+          setErrorMsg(data.error || 'Failed to save Passkey.');
+        }
+      }
+    } catch {
+      setErrorMsg('Passkey setup cancelled or timed out.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyPasskey = async () => {
+    const savedCredId = localStorage.getItem('zeroassert_passkey_id');
+    if (!savedCredId) {
+      setHasPasskey(false);
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          timeout: 60000,
+          userVerification: 'required'
+        }
+      });
+
+      if (assertion) {
+        const res = await fetch('/api/passkey', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'authenticate',
+            credential_id: savedCredId,
+            checkout_id: checkoutId,
+            shop_domain: shopDomain
+          })
+        });
+
+        const data = await res.json();
+        if (data.success && data.age_verified) {
+          setIsVerified(true);
+        } else {
+          setErrorMsg(data.error || 'Passkey verification rejected.');
+        }
+      }
+    } catch {
+      setErrorMsg('Passkey authentication cancelled or failed.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <>
-      {/* Surgical CSS overrides for third-party button and modal */}
       <style dangerouslySetInnerHTML={{ __html: `
-        /* Hide the broken third-party image */
-        button img {
-          display: none !important;
-        }
-        /* Style the Anon Aadhaar login button to look professional */
+        button img { display: none !important; }
         button[data-testid="login-button"], 
         .anon-aadhaar-login-button,
         div:has(> button) > button {
           background-color: #0f172a !important;
           color: #ffffff !important;
           font-weight: 600 !important;
-          font-size: 14px !important;
-          padding: 12px 20px !important;
+          font-size: 13px !important;
+          padding: 12px 16px !important;
           border-radius: 8px !important;
           border: none !important;
           cursor: pointer !important;
-          box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
-          transition: background-color 0.2s ease !important;
           width: 100% !important;
-        }
-        div:has(> button) > button:hover {
-          background-color: #1e293b !important;
         }
       `}} />
 
       <main style={{
         minHeight: '100dvh',
-        backgroundColor: '#f1f5f9',
+        backgroundColor: '#f8fafc',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -90,42 +205,31 @@ export default function CheckoutVerificationGate() {
           backgroundColor: '#ffffff',
           borderRadius: '16px',
           padding: '24px 20px',
-          boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
           border: '1px solid #e2e8f0',
           textAlign: 'center'
         }}>
-          {/* Header */}
           <div style={{
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            width: '44px',
-            height: '44px',
+            width: '42px',
+            height: '42px',
             backgroundColor: '#e0e7ff',
             color: '#4338ca',
             borderRadius: '50%',
             marginBottom: '12px',
-            fontSize: '20px'
+            fontSize: '18px'
           }}>
             🛡️
           </div>
 
-          <h2 style={{
-            fontSize: '18px',
-            fontWeight: '700',
-            color: '#0f172a',
-            margin: '0 0 6px 0'
-          }}>
+          <h2 style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a', margin: '0 0 6px 0' }}>
             Age Verification Required
           </h2>
           
-          <p style={{
-            fontSize: '12px',
-            color: '#64748b',
-            lineHeight: '1.4',
-            margin: '0 0 18px 0'
-          }}>
-            This order contains age-restricted items. Complete a 100% private Zero-Knowledge age check to unlock payment.
+          <p style={{ fontSize: '12px', color: '#64748b', lineHeight: '1.4', margin: '0 0 16px 0' }}>
+            Restricted items detected. Complete verification to unlock payment options.
           </p>
 
           {errorMsg && (
@@ -136,13 +240,12 @@ export default function CheckoutVerificationGate() {
               fontSize: '12px',
               padding: '8px 12px',
               borderRadius: '8px',
-              marginBottom: '16px'
+              marginBottom: '14px'
             }}>
               {errorMsg}
             </div>
           )}
 
-          {/* Verification Box */}
           {!isVerified ? (
             <div style={{
               padding: '16px',
@@ -151,25 +254,63 @@ export default function CheckoutVerificationGate() {
               borderRadius: '12px',
               marginBottom: '20px'
             }}>
-              <LogInWithAnonAadhaar 
-                nullifierSeed={1234}
-                fieldsToReveal={['revealAgeAbove18']}
-                useTestAadhaar={true}
-              />
+              {hasPasskey ? (
+                <div>
+                  <button
+                    onClick={handleVerifyPasskey}
+                    disabled={loading}
+                    style={{
+                      width: '100%',
+                      backgroundColor: '#2563eb',
+                      color: '#ffffff',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      border: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <span>⚡</span> 1-Click Biometric Verification
+                  </button>
+                  <p style={{ fontSize: '11px', color: '#64748b', marginTop: '8px' }}>
+                    Passkey detected on this device.
+                  </p>
+                  <button
+                    onClick={() => setHasPasskey(false)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#6366f1',
+                      fontSize: '11px',
+                      marginTop: '6px',
+                      cursor: 'pointer',
+                      textDecoration: 'underline'
+                    }}
+                  >
+                    Verify using Aadhaar instead
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <LogInWithAnonAadhaar 
+                    nullifierSeed={1234}
+                    fieldsToReveal={['revealAgeAbove18']}
+                    useTestAadhaar={true}
+                  />
+                  <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '10px' }}>
+                    Upload an e-Aadhaar QR screenshot or PDF.
+                  </p>
+                </div>
+              )}
 
-              <p style={{
-                fontSize: '11px',
-                color: '#94a3b8',
-                marginTop: '10px',
-                lineHeight: '1.3'
-              }}>
-                Upload an e-Aadhaar QR screenshot or PDF.<br/>
-                <em>Do not use live camera capture.</em>
-              </p>
-
-              {anonAadhaar.status === 'logging-in' && (
+              {loading && (
                 <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', marginTop: '10px' }}>
-                  Generating cryptographic proof...
+                  Processing verification...
                 </p>
               )}
             </div>
@@ -179,7 +320,7 @@ export default function CheckoutVerificationGate() {
               border: '1px solid #bbf7d0',
               borderRadius: '12px',
               padding: '12px',
-              marginBottom: '20px'
+              marginBottom: '16px'
             }}>
               <p style={{ fontSize: '13px', fontWeight: '600', color: '#166534', margin: '0 0 2px 0' }}>
                 ✅ Age Verified (18+)
@@ -187,10 +328,31 @@ export default function CheckoutVerificationGate() {
               <p style={{ fontSize: '11px', color: '#15803d', margin: 0 }}>
                 Payment methods unlocked.
               </p>
+
+              {!passkeySaved && (
+                <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #dcfce7' }}>
+                  <button
+                    onClick={handleCreatePasskey}
+                    disabled={loading}
+                    style={{
+                      backgroundColor: '#15803d',
+                      color: '#ffffff',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🔐 Enable 1-Click Passkey for Next Time
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Payment Gate */}
+          {/* Payment Gate: Unlocks automatically when isVerified is true */}
           <div style={{
             display: 'flex',
             flexDirection: 'column',
@@ -231,4 +393,4 @@ export default function CheckoutVerificationGate() {
       </main>
     </>
   );
-}
+                  }
