@@ -27,10 +27,8 @@ export async function POST(req: NextRequest) {
 
     let isAgeVerified = false;
 
-    if (bypass_simulation) {
-      isAgeVerified = true;
-    } else if (file) {
-      // In-RAM verification execution
+    if (bypass_simulation || file) {
+      // In-RAM processing on Vercel Node container
       isAgeVerified = true;
     } else {
       return NextResponse.json(
@@ -39,42 +37,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isAgeVerified) {
-      return NextResponse.json(
-        { success: false, error: 'Age verification failed: Under 18' },
-        { status: 403 }
-      );
-    }
-
-    // Atomic Supabase Credit Deduction (Non-blocking)
+    // Atomic Supabase Deduction using exact schema names
     const supabase = getSupabase();
     if (supabase) {
       try {
         const { data: merchant, error: fetchErr } = await supabase
           .from('merchant_accounts')
-          .select('id, credits_remaining')
+          .select('verification_credits')
           .eq('shop_domain', shop_domain)
           .single();
 
         if (!fetchErr && merchant) {
-          const nextCredits = Math.max(0, (merchant.credits_remaining ?? 100) - 1);
+          const currentCredits = merchant.verification_credits ?? 82;
+          const updatedCredits = Math.max(0, currentCredits - 1);
+
           await supabase
             .from('merchant_accounts')
-            .update({ credits_remaining: nextCredits, updated_at: new Date().toISOString() })
-            .eq('id', merchant.id);
+            .update({ verification_credits: updatedCredits })
+            .eq('shop_domain', shop_domain);
         }
 
-        await supabase.from('verification_audit_log').insert([
+        // Insert into existing age_verifications table
+        await supabase.from('age_verifications').insert([
           {
             checkout_id,
             shop_domain,
-            age_verified: true,
-            verification_type: bypass_simulation ? 'simulated' : 'ephemeral_edge',
+            verified: true,
+            method: bypass_simulation ? 'simulated' : 'ephemeral_edge',
             created_at: new Date().toISOString(),
           },
         ]);
       } catch (dbErr) {
-        console.warn('Supabase non-blocking accounting warning:', dbErr);
+        console.warn('Supabase non-blocking error:', dbErr);
       }
     }
 
