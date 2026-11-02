@@ -32,22 +32,24 @@ export default function CheckoutVerificationGate() {
     }
   }, []);
 
-  // Send payload to Ephemeral Edge endpoint
-  const sendToEphemeralProver = async (qrRawData?: string, isSimulation = false) => {
+  // Zero-Heap File Upload via native FormData
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
     setLoading(true);
     setErrorMsg(null);
-    setStatusText(isSimulation ? 'Simulating verification...' : 'Verifying via Ephemeral Edge...');
+    setStatusText('Streaming securely to ephemeral edge...');
 
     try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('checkout_id', checkoutId);
+      formData.append('shop_domain', shopDomain);
+
       const res = await fetch('/api/verify-ephemeral', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          checkout_id: checkoutId,
-          shop_domain: shopDomain,
-          qr_raw_data: qrRawData || null,
-          bypass_simulation: isSimulation,
-        }),
+        body: formData, // Streams natively without allocating JS heap buffers
       });
 
       const data = await res.json();
@@ -55,48 +57,45 @@ export default function CheckoutVerificationGate() {
         setIsVerified(true);
         setStatusText('');
       } else {
-        setErrorMsg(data.error || 'Ephemeral verification was rejected.');
+        setErrorMsg(data.error || 'Verification failed. Please try a clearer QR image.');
       }
     } catch {
       setErrorMsg('Network error connecting to verification engine.');
     } finally {
       setLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  // Ultra-lightweight image scanner using browser Canvas
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
+  // Instant Dev Simulation (Uses 0 memory)
+  const handleSimulate = async () => {
     setLoading(true);
     setErrorMsg(null);
-    setStatusText('Reading QR image...');
+    setStatusText('Running ephemeral check...');
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const img = new Image();
-      img.onload = async () => {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) throw new Error('Canvas context unavailable');
+    try {
+      const formData = new FormData();
+      formData.append('checkout_id', checkoutId);
+      formData.append('shop_domain', shopDomain);
+      formData.append('bypass_simulation', 'true');
 
-          ctx.drawImage(img, 0, 0, img.width, img.height);
-          
-          // Transmit decoded buffer or image data to ephemeral edge
-          setStatusText('Verifying cryptographic proof...');
-          await sendToEphemeralProver(canvas.toDataURL('image/jpeg', 0.8));
-        } catch (err: any) {
-          setErrorMsg('Failed to process image: ' + err.message);
-          setLoading(false);
-        }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+      const res = await fetch('/api/verify-ephemeral', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success && data.age_verified) {
+        setIsVerified(true);
+        setStatusText('');
+      } else {
+        setErrorMsg(data.error || 'Simulation failed.');
+      }
+    } catch {
+      setErrorMsg('Network error.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // WebAuthn Passkey Registration
@@ -290,7 +289,7 @@ export default function CheckoutVerificationGate() {
                   type="file"
                   accept="image/*"
                   style={{ display: 'none' }}
-                  onChange={handleImageUpload}
+                  onChange={handleFileUpload}
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -324,7 +323,7 @@ export default function CheckoutVerificationGate() {
             <div style={{ marginTop: '14px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
               <button
                 type="button"
-                onClick={() => sendToEphemeralProver(undefined, true)}
+                onClick={handleSimulate}
                 style={{
                   background: 'none',
                   border: '1px solid #cbd5e1',
@@ -381,44 +380,9 @@ export default function CheckoutVerificationGate() {
           </div>
         )}
 
-        {/* Payment Gate: Unlocks automatically when isVerified is true */}
         <div style={{
           display: 'flex',
           flexDirection: 'column',
           gap: '8px',
-          opacity: isVerified ? 1 : 0.35,
-          pointerEvents: isVerified ? 'auto' : 'none',
-          transition: 'opacity 0.2s ease',
-        }}>
-          <button style={{
-            width: '100%',
-            backgroundColor: '#0f172a',
-            color: '#ffffff',
-            padding: '12px',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: '600',
-            border: 'none',
-            cursor: isVerified ? 'pointer' : 'not-allowed',
-          }}>
-            Pay via UPI (Instant Intent)
-          </button>
-
-          <button style={{
-            width: '100%',
-            backgroundColor: '#ffffff',
-            color: '#334155',
-            padding: '12px',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: '600',
-            border: '1px solid #cbd5e1',
-            cursor: isVerified ? 'pointer' : 'not-allowed',
-          }}>
-            Pay via Credit / Debit Card
-          </button>
-        </div>
-      </div>
-    </main>
-  );
-}
+          opacity: isVerified ? 1 : 0.35
+      
