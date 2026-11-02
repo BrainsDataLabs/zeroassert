@@ -5,12 +5,10 @@ export const dynamic = 'force-dynamic';
 
 function sanitizeUrl(rawUrl: string): string {
   let url = rawUrl.trim().replace(/^["']|["']$/g, '');
-  // If the dashboard URL was pasted by mistake, extract the project reference ID
   const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
   if (dashMatch) {
     return `https://${dashMatch[1]}.supabase.co`;
   }
-  // Remove /rest/v1 or trailing slashes that break PostgREST routing
   return url.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
 }
 
@@ -85,13 +83,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: `Update error: ${updateErr.message}`, debug: debugInfo }, { status: 500 });
     }
 
-    // 3. Insert audit log
+    // 3. Insert audit log record (Schema aligned)
     const { error: insertErr } = await supabase.from('age_verifications').insert([
       {
         checkout_id,
         shop_domain,
-        verified: true,
-        method: bypass_simulation ? 'simulated' : 'ephemeral_edge',
         created_at: new Date().toISOString(),
       },
     ]);
