@@ -1,83 +1,424 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { AnonAadhaarProvider, LogInWithAnonAadhaar, useAnonAadhaar } from '@anon-aadhaar/react';
+import { useState, useEffect, useRef } from 'react';
 
 export const dynamic = 'force-dynamic';
 
-function VerificationGateInner() {
-  const [anonAadhaar] = useAnonAadhaar();
+function bufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+export default function CheckoutVerificationGate() {
   const [isVerified, setIsVerified] = useState(false);
+  const [hasPasskey, setHasPasskey] = useState(false);
+  const [passkeySaved, setPasskeySaved] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const checkoutId = "chk_live_session_9823";
   const shopDomain = "standalone-test.myshopify.com";
 
   useEffect(() => {
-    if (anonAadhaar.status === 'logged-in' && !isVerified) {
-      syncZkpProof();
+    const savedCredId = localStorage.getItem('zeroassert_passkey_id');
+    if (savedCredId) {
+      setHasPasskey(true);
     }
-  }, [anonAadhaar.status]);
+  }, []);
 
-  const syncZkpProof = async () => {
+  // Send payload to Ephemeral Edge endpoint
+  const sendToEphemeralProver = async (qrRawData?: string, isSimulation = false) => {
+    setLoading(true);
+    setErrorMsg(null);
+    setStatusText(isSimulation ? 'Simulating verification...' : 'Verifying via Ephemeral Edge...');
+
     try {
-      const res = await fetch('/api/zkp', {
+      const res = await fetch('/api/verify-ephemeral', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ checkout_id: checkoutId, age_verified: true, shop_domain: shopDomain }),
+        body: JSON.stringify({
+          checkout_id: checkoutId,
+          shop_domain: shopDomain,
+          qr_raw_data: qrRawData || null,
+          bypass_simulation: isSimulation,
+        }),
       });
+
       const data = await res.json();
-      if (data.success) setIsVerified(true);
+      if (data.success && data.age_verified) {
+        setIsVerified(true);
+        setStatusText('');
+      } else {
+        setErrorMsg(data.error || 'Ephemeral verification was rejected.');
+      }
     } catch {
-      setErrorMsg('Network error.');
+      setErrorMsg('Network error connecting to verification engine.');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // EXTREME LEAN MODE: If proving is actively running, unmount ALL heavy DOM elements.
-  // Give 100% of the browser's RAM to the WASM execution.
-  if (anonAadhaar.status === 'logging-in') {
-    return (
-      <main style={{ minHeight: '100dvh', backgroundColor: '#000000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <p style={{ color: '#ffffff', fontSize: '14px', fontFamily: 'monospace' }}>
-          ⚠️ DEVICE DEDICATED TO CRYPTOGRAPHIC PROVING.<br/><br/>
-          Do not switch tabs. Do not lock screen.<br/>
-          Allocating memory...
-        </p>
-      </main>
-    );
-  }
+  // Ultra-lightweight image scanner using browser Canvas
+  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    setErrorMsg(null);
+    setStatusText('Reading QR image...');
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('Canvas context unavailable');
+
+          ctx.drawImage(img, 0, 0, img.width, img.height);
+          
+          // Transmit decoded buffer or image data to ephemeral edge
+          setStatusText('Verifying cryptographic proof...');
+          await sendToEphemeralProver(canvas.toDataURL('image/jpeg', 0.8));
+        } catch (err: any) {
+          setErrorMsg('Failed to process image: ' + err.message);
+          setLoading(false);
+        }
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // WebAuthn Passkey Registration
+  const handleCreatePasskey = async () => {
+    if (!window.PublicKeyCredential) {
+      setErrorMsg('Biometric Passkeys are not supported on this browser.');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+      const userId = new Uint8Array(16);
+      crypto.getRandomValues(userId);
+
+      const credential = (await navigator.credentials.create({
+        publicKey: {
+          challenge,
+          rp: { name: 'ZeroAssert' },
+          user: {
+            id: userId,
+            name: 'anonymous_buyer',
+            displayName: 'Verified Buyer',
+          },
+          pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+          authenticatorSelection: {
+            authenticatorAttachment: 'platform',
+            userVerification: 'required',
+          },
+          timeout: 60000,
+        },
+      })) as PublicKeyCredential;
+
+      if (credential) {
+        const rawId = bufferToBase64(credential.rawId);
+        localStorage.setItem('zeroassert_passkey_id', rawId);
+        setPasskeySaved(true);
+      }
+    } catch {
+      setErrorMsg('Passkey enrollment cancelled.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // WebAuthn Passkey 1-Click Verification for Returning Buyers
+  const handleVerifyPasskey = async () => {
+    const savedCredId = localStorage.getItem('zeroassert_passkey_id');
+    if (!savedCredId) {
+      setHasPasskey(false);
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          timeout: 60000,
+          userVerification: 'required',
+        },
+      });
+
+      if (assertion) {
+        setIsVerified(true);
+      }
+    } catch {
+      setErrorMsg('Passkey authentication cancelled.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <>
-      <style dangerouslySetInnerHTML={{ __html: `
-        button img { display: none !important; }
-        div:has(> button) > button {
-          background-color: #0f172a !important; color: #ffffff !important;
-          font-weight: 600 !important; font-size: 13px !important;
-          padding: 12px 16px !important; border-radius: 8px !important; width: 100% !important;
-        }
-      `}} />
-      <main style={{ minHeight: '100dvh', backgroundColor: '#f8fafc', padding: '20px' }}>
-        {!isVerified ? (
-          <div style={{ maxWidth: '400px', margin: '0 auto', background: '#fff', padding: '20px', borderRadius: '12px' }}>
-             <h2 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '16px' }}>Verify Age (Strict On-Device)</h2>
-             {errorMsg && <p style={{ color: 'red' }}>{errorMsg}</p>}
-             <LogInWithAnonAadhaar nullifierSeed={1234} fieldsToReveal={['revealAgeAbove18']} useTestAadhaar={false} />
-          </div>
-        ) : (
-          <div style={{ maxWidth: '400px', margin: '0 auto', background: '#f0fdf4', padding: '20px', borderRadius: '12px', textAlign: 'center' }}>
-            <p style={{ color: '#166534', fontWeight: 'bold' }}>✅ ZKP Verified Locally.</p>
+    <main style={{
+      minHeight: '100dvh',
+      backgroundColor: '#f8fafc',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px 16px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      boxSizing: 'border-box',
+    }}>
+      <div style={{
+        maxWidth: '400px',
+        width: '100%',
+        backgroundColor: '#ffffff',
+        borderRadius: '16px',
+        padding: '24px 20px',
+        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
+        border: '1px solid #e2e8f0',
+        textAlign: 'center',
+      }}>
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '42px',
+          height: '42px',
+          backgroundColor: '#e0e7ff',
+          color: '#4338ca',
+          borderRadius: '50%',
+          marginBottom: '12px',
+          fontSize: '18px',
+        }}>
+          🛡️
+        </div>
+
+        <h2 style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a', margin: '0 0 6px 0' }}>
+          Age Verification Required
+        </h2>
+
+        <p style={{ fontSize: '12px', color: '#64748b', lineHeight: '1.4', margin: '0 0 16px 0' }}>
+          Restricted items detected. Complete verification to unlock payment options.
+        </p>
+
+        {errorMsg && (
+          <div style={{
+            backgroundColor: '#fef2f2',
+            border: '1px solid #fecaca',
+            color: '#991b1b',
+            fontSize: '12px',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            marginBottom: '14px',
+          }}>
+            {errorMsg}
           </div>
         )}
-      </main>
-    </>
-  );
-}
 
-export default function CheckoutVerificationGate() {
-  return (
-    <AnonAadhaarProvider useTestAadhaar={false}>
-      <VerificationGateInner />
-    </AnonAadhaarProvider>
+        {!isVerified ? (
+          <div style={{
+            padding: '16px',
+            backgroundColor: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            marginBottom: '20px',
+          }}>
+            {hasPasskey ? (
+              <div>
+                <button
+                  onClick={handleVerifyPasskey}
+                  disabled={loading}
+                  style={{
+                    width: '100%',
+                    backgroundColor: '#2563eb',
+                    color: '#ffffff',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    border: 'none',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <span>⚡</span> 1-Click Biometric Verification
+                </button>
+                <p style={{ fontSize: '11px', color: '#64748b', marginTop: '8px' }}>
+                  Passkey detected on this device.
+                </p>
+                <button
+                  onClick={() => setHasPasskey(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#6366f1',
+                    fontSize: '11px',
+                    marginTop: '6px',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Verify using QR instead
+                </button>
+              </div>
+            ) : (
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={handleImageUpload}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                  style={{
+                    width: '100%',
+                    backgroundColor: '#0f172a',
+                    color: '#ffffff',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Upload Secure QR Screenshot
+                </button>
+                <p style={{ fontSize: '11px', color: '#94a3b8', marginTop: '10px' }}>
+                  Processed ephemerally in RAM. Zero personal data saved.
+                </p>
+              </div>
+            )}
+
+            {loading && (
+              <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', marginTop: '10px' }}>
+                {statusText || 'Processing...'}
+              </p>
+            )}
+
+            <div style={{ marginTop: '14px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
+              <button
+                type="button"
+                onClick={() => sendToEphemeralProver(undefined, true)}
+                style={{
+                  background: 'none',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '6px',
+                  color: '#64748b',
+                  fontSize: '11px',
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                }}
+              >
+                ⚡ [Dev Test: Simulate Ephemeral Verification]
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{
+            backgroundColor: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            borderRadius: '12px',
+            padding: '12px',
+            marginBottom: '16px',
+          }}>
+            <p style={{ fontSize: '13px', fontWeight: '600', color: '#166534', margin: '0 0 2px 0' }}>
+              ✅ Age Verified (18+)
+            </p>
+            <p style={{ fontSize: '11px', color: '#15803d', margin: 0 }}>
+              Payment methods unlocked.
+            </p>
+
+            {!passkeySaved ? (
+              <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #dcfce7' }}>
+                <button
+                  onClick={handleCreatePasskey}
+                  disabled={loading}
+                  style={{
+                    backgroundColor: '#15803d',
+                    color: '#ffffff',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  🔐 Enable 1-Click Passkey for Next Time
+                </button>
+              </div>
+            ) : (
+              <p style={{ fontSize: '11px', color: '#166534', marginTop: '8px' }}>
+                ⚡ Passkey enrolled! Future checkouts verify in 1 click.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Payment Gate: Unlocks automatically when isVerified is true */}
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
+          opacity: isVerified ? 1 : 0.35,
+          pointerEvents: isVerified ? 'auto' : 'none',
+          transition: 'opacity 0.2s ease',
+        }}>
+          <button style={{
+            width: '100%',
+            backgroundColor: '#0f172a',
+            color: '#ffffff',
+            padding: '12px',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '600',
+            border: 'none',
+            cursor: isVerified ? 'pointer' : 'not-allowed',
+          }}>
+            Pay via UPI (Instant Intent)
+          </button>
+
+          <button style={{
+            width: '100%',
+            backgroundColor: '#ffffff',
+            color: '#334155',
+            padding: '12px',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: '600',
+            border: '1px solid #cbd5e1',
+            cursor: isVerified ? 'pointer' : 'not-allowed',
+          }}>
+            Pay via Credit / Debit Card
+          </button>
+        </div>
+      </div>
+    </main>
   );
 }
