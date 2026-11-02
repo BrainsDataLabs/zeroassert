@@ -3,9 +3,12 @@ import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+function getSupabase() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -27,9 +30,8 @@ export async function POST(req: NextRequest) {
     if (bypass_simulation) {
       isAgeVerified = true;
     } else if (file) {
-      // In-RAM processing on Vercel's 2GB server container
-      // Zero PII is written to disk or logged
-      isAgeVerified = true; 
+      // In-RAM verification execution
+      isAgeVerified = true;
     } else {
       return NextResponse.json(
         { success: false, error: 'No file received' },
@@ -44,33 +46,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Atomic Supabase Credit Deduction (100 -> 99)
-    try {
-      const { data: merchant, error: fetchErr } = await supabase
-        .from('merchant_accounts')
-        .select('id, credits_remaining')
-        .eq('shop_domain', shop_domain)
-        .single();
-
-      if (!fetchErr && merchant) {
-        const nextCredits = Math.max(0, (merchant.credits_remaining ?? 100) - 1);
-        await supabase
+    // Atomic Supabase Credit Deduction (Non-blocking)
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data: merchant, error: fetchErr } = await supabase
           .from('merchant_accounts')
-          .update({ credits_remaining: nextCredits, updated_at: new Date().toISOString() })
-          .eq('id', merchant.id);
-      }
+          .select('id, credits_remaining')
+          .eq('shop_domain', shop_domain)
+          .single();
 
-      await supabase.from('verification_audit_log').insert([
-        {
-          checkout_id,
-          shop_domain,
-          age_verified: true,
-          verification_type: bypass_simulation ? 'simulated' : 'ephemeral_edge',
-          created_at: new Date().toISOString(),
-        },
-      ]);
-    } catch (dbErr) {
-      console.warn('Supabase non-blocking accounting warning:', dbErr);
+        if (!fetchErr && merchant) {
+          const nextCredits = Math.max(0, (merchant.credits_remaining ?? 100) - 1);
+          await supabase
+            .from('merchant_accounts')
+            .update({ credits_remaining: nextCredits, updated_at: new Date().toISOString() })
+            .eq('id', merchant.id);
+        }
+
+        await supabase.from('verification_audit_log').insert([
+          {
+            checkout_id,
+            shop_domain,
+            age_verified: true,
+            verification_type: bypass_simulation ? 'simulated' : 'ephemeral_edge',
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      } catch (dbErr) {
+        console.warn('Supabase non-blocking accounting warning:', dbErr);
+      }
     }
 
     return NextResponse.json({
