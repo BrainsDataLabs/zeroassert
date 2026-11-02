@@ -18,6 +18,7 @@ export default function CheckoutGate() {
   const [loading, setLoading] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [serverDebug, setServerDebug] = useState<string | null>(null);
 
   const fileRef = useRef<HTMLInputElement | null>(null);
   const checkoutId = 'chk_live_session_9823';
@@ -30,6 +31,7 @@ export default function CheckoutGate() {
   const sendPayload = async (file?: File, isSim = false) => {
     setLoading(true);
     setErrorMsg(null);
+    setServerDebug(null);
     setStatusText(isSim ? 'Simulating check...' : 'Streaming to edge...');
 
     try {
@@ -41,6 +43,10 @@ export default function CheckoutGate() {
 
       const res = await fetch('/api/verify-ephemeral', { method: 'POST', body: fd });
       const data = await res.json();
+
+      if (data.debug || data.db_status) {
+        setServerDebug(JSON.stringify(data.debug || data.db_status));
+      }
 
       if (data.success && data.age_verified) {
         setIsVerified(true);
@@ -110,7 +116,8 @@ export default function CheckoutGate() {
         <h2 style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a', margin: '0 0 6px 0' }}>Age Verification Required</h2>
         <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 16px 0' }}>Restricted items detected. Complete verification to unlock payment.</p>
 
-        {errorMsg && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: '12px', padding: '8px', borderRadius: '8px', marginBottom: '12px' }}>{errorMsg}</div>}
+        {errorMsg && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: '12px', padding: '8px', borderRadius: '8px', marginBottom: '12px', wordBreak: 'break-word' }}>{errorMsg}</div>}
+        {serverDebug && <div style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#334155', fontSize: '10px', padding: '6px', borderRadius: '6px', marginBottom: '12px', textAlign: 'left', wordBreak: 'break-all', fontFamily: 'monospace' }}>DBG: {serverDebug}</div>}
 
         {!isVerified ? (
           <div style={{ padding: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', marginBottom: '16px' }}>
