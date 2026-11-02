@@ -22,8 +22,8 @@ export default function CheckoutVerificationGate() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const checkoutId = "chk_live_session_9823";
-  const shopDomain = "standalone-test.myshopify.com";
+  const checkoutId = 'chk_live_session_9823';
+  const shopDomain = 'standalone-test.myshopify.com';
 
   useEffect(() => {
     const savedCredId = localStorage.getItem('zeroassert_passkey_id');
@@ -32,7 +32,6 @@ export default function CheckoutVerificationGate() {
     }
   }, []);
 
-  // Zero-Heap File Upload via native FormData
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -49,7 +48,7 @@ export default function CheckoutVerificationGate() {
 
       const res = await fetch('/api/verify-ephemeral', {
         method: 'POST',
-        body: formData, // Streams natively without allocating JS heap buffers
+        body: formData,
       });
 
       const data = await res.json();
@@ -67,7 +66,6 @@ export default function CheckoutVerificationGate() {
     }
   };
 
-  // Instant Dev Simulation (Uses 0 memory)
   const handleSimulate = async () => {
     setLoading(true);
     setErrorMsg(null);
@@ -98,7 +96,6 @@ export default function CheckoutVerificationGate() {
     }
   };
 
-  // WebAuthn Passkey Registration
   const handleCreatePasskey = async () => {
     if (!window.PublicKeyCredential) {
       setErrorMsg('Biometric Passkeys are not supported on this browser.');
@@ -143,7 +140,6 @@ export default function CheckoutVerificationGate() {
     }
   };
 
-  // WebAuthn Passkey 1-Click Verification for Returning Buyers
   const handleVerifyPasskey = async () => {
     const savedCredId = localStorage.getItem('zeroassert_passkey_id');
     if (!savedCredId) {
@@ -244,6 +240,7 @@ export default function CheckoutVerificationGate() {
             {hasPasskey ? (
               <div>
                 <button
+                  type="button"
                   onClick={handleVerifyPasskey}
                   disabled={loading}
                   style={{
@@ -268,6 +265,7 @@ export default function CheckoutVerificationGate() {
                   Passkey detected on this device.
                 </p>
                 <button
+                  type="button"
                   onClick={() => setHasPasskey(false)}
                   style={{
                     background: 'none',
@@ -292,6 +290,7 @@ export default function CheckoutVerificationGate() {
                   onChange={handleFileUpload}
                 />
                 <button
+                  type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={loading}
                   style={{
@@ -356,6 +355,7 @@ export default function CheckoutVerificationGate() {
             {!passkeySaved ? (
               <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #dcfce7' }}>
                 <button
+                  type="button"
                   onClick={handleCreatePasskey}
                   disabled={loading}
                   style={{
@@ -384,5 +384,45 @@ export default function CheckoutVerificationGate() {
           display: 'flex',
           flexDirection: 'column',
           gap: '8px',
-          opacity: isVerified ? 1 : 0.35
-      
+          opacity: isVerified ? 1 : 0.35,
+          pointerEvents: isVerified ? 'auto' : 'none',
+          transition: 'opacity 0.2s ease',
+        }}>
+          <button
+            type="button"
+            style={{
+              width: '100%',
+              backgroundColor: '#0f172a',
+              color: '#ffffff',
+              padding: '12px',
+              borderRadius: '8px',
+              fontSize: '14px',
+              fontWeight: '600',
+              border: 'none',
+              cursor: isVerified ? 'pointer' : 'not-allowed',
+            }}
+          >
+            Pay via UPI (Instant Intent)
+          </button>
+
+          <button
+            type="button"
+            style={{
+              width: '100%',
+              backgroundColor: '#ffffff',
+              color: '#334155',
+              padding: '12px',
+              borderRadius: '8px',
+              fontSize: '14px',
+              fontWeight: '600',
+              border: '1px solid #cbd5e1',
+              cursor: isVerified ? 'pointer' : 'not-allowed',
+            }}
+          >
+            Pay via Credit / Debit Card
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
