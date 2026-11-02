@@ -3,6 +3,17 @@ import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
 
+function sanitizeUrl(rawUrl: string): string {
+  let url = rawUrl.trim().replace(/^["']|["']$/g, '');
+  // If the dashboard URL was pasted by mistake, extract the project reference ID
+  const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
+  if (dashMatch) {
+    return `https://${dashMatch[1]}.supabase.co`;
+  }
+  // Remove /rest/v1 or trailing slashes that break PostgREST routing
+  return url.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -15,22 +26,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'No verification payload' }, { status: 400 });
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!rawUrl || !rawKey) {
+      return NextResponse.json({
+        success: false,
+        error: 'Supabase keys missing in Vercel.',
+        debug: { hasUrl: Boolean(rawUrl), hasKey: Boolean(rawKey) },
+      }, { status: 500 });
+    }
+
+    const supabaseUrl = sanitizeUrl(rawUrl);
+    const serviceKey = rawKey.trim().replace(/^["']|["']$/g, '');
 
     const debugInfo: Record<string, any> = {
-      hasUrl: Boolean(supabaseUrl),
+      sanitizedUrl: supabaseUrl,
       hasKey: Boolean(serviceKey),
       shop_domain,
     };
-
-    if (!supabaseUrl || !serviceKey) {
-      return NextResponse.json({
-        success: false,
-        error: 'Supabase keys missing in Vercel. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel Settings and Redeploy.',
-        debug: debugInfo,
-      }, { status: 500 });
-    }
 
     const supabase = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false },
@@ -52,10 +66,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (!merchant) {
-      return NextResponse.json({ success: false, error: `Merchant domain not found in table: ${shop_domain}`, debug: debugInfo }, { status: 404 });
+      return NextResponse.json({ success: false, error: `Merchant not found: ${shop_domain}`, debug: debugInfo }, { status: 404 });
     }
 
-    // 2. Decrement credit balance
+    // 2. Decrement balance
     const currentCredits = merchant.verification_credits ?? 82;
     const nextCredits = Math.max(0, currentCredits - 1);
 
@@ -71,7 +85,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: `Update error: ${updateErr.message}`, debug: debugInfo }, { status: 500 });
     }
 
-    // 3. Insert audit log record
+    // 3. Insert audit log
     const { error: insertErr } = await supabase.from('age_verifications').insert([
       {
         checkout_id,
