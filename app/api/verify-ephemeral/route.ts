@@ -4,6 +4,14 @@ import crypto from 'crypto';
 import zlib from 'zlib';
 import Jimp from 'jimp';
 import jsQR from 'jsqr';
+import {
+  MultiFormatReader,
+  BarcodeFormat,
+  DecodeHintType,
+  RGBLuminanceSource,
+  BinaryBitmap,
+  HybridBinarizer,
+} from '@zxing/library';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +30,37 @@ function generateAttestationProof(checkoutId: string, shopDomain: string, signat
     .digest('hex');
 }
 
+// ZXing high-density decoder
+function decodeWithZXing(imageBitmap: { width: number; height: number; data: Buffer }): { text: string; rawBytes?: Uint8Array } | null {
+  try {
+    const { width, height, data } = imageBitmap;
+    const len = width * height;
+    const luminances = new Uint8ClampedArray(len);
+
+    for (let i = 0; i < len; i++) {
+      const offset = i * 4;
+      luminances[i] = (data[offset] * 77 + data[offset + 1] * 150 + data[offset + 2] * 29) >> 8;
+    }
+
+    const luminanceSource = new RGBLuminanceSource(luminances, width, height);
+    const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
+
+    const reader = new MultiFormatReader();
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    reader.setHints(hints);
+
+    const result = reader.decode(binaryBitmap);
+    return {
+      text: result.getText(),
+      rawBytes: result.getRawBytes(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -30,7 +69,6 @@ export async function POST(req: NextRequest) {
     const bypass_simulation = formData.get('bypass_simulation') === 'true';
     const file = formData.get('file') as File | null;
 
-    // 1. BLOCK SIMULATION IN PRODUCTION
     if (bypass_simulation && process.env.NODE_ENV === 'production') {
       return NextResponse.json(
         { success: false, age_verified: false, error: 'Simulation mode is disabled in production.' },
@@ -52,7 +90,6 @@ export async function POST(req: NextRequest) {
       isAgeVerified = true;
       signatureHash = 'simulated_' + crypto.randomBytes(8).toString('hex');
     } else if (file) {
-      // Validate file type
       if (!file.type.startsWith('image/')) {
         return NextResponse.json(
           { success: false, age_verified: false, error: 'Uploaded file is not a valid image.' },
@@ -63,7 +100,6 @@ export async function POST(req: NextRequest) {
       const arrayBuffer = await file.arrayBuffer();
       const imageBuffer = Buffer.from(arrayBuffer);
 
-      // A. LOAD IMAGE PIXELS
       let image: any;
       try {
         image = await Jimp.read(imageBuffer);
@@ -74,14 +110,50 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // B. SCAN FOR QR CODE MATRIX (Fails immediately on selfies, blank photos, memes)
-      const qrCode = jsQR(
-        new Uint8ClampedArray(image.bitmap.data),
-        image.bitmap.width,
-        image.bitmap.height
-      );
+      // 1. NORMALIZE MASSIVE PHONE CAMERA / SCREENSHOT RESOLUTIONS
+      // High-res captures (e.g. 1080x2400 or 4000x3000) cause finder-pattern misses.
+      // Scaling down to max dimension 1400 brings dense modules to the optimal pixel ratio.
+      const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
+      if (maxDim > 1400) {
+        if (image.bitmap.width > image.bitmap.height) {
+          image.resize(1400, Jimp.AUTO);
+        } else {
+          image.resize(Jimp.AUTO, 1400);
+        }
+      }
 
-      if (!qrCode || (!qrCode.data && !qrCode.binaryData)) {
+      // 2. MULTI-PASS DECODING
+      let qrText = '';
+      let qrRawBytes: Uint8Array | undefined;
+
+      // Pass A: ZXing on normalized image
+      let decoded = decodeWithZXing(image.bitmap);
+
+      // Pass B: ZXing with enhanced contrast (for faint or shaded camera scans)
+      if (!decoded) {
+        const enhanced = image.clone().greyscale().contrast(0.25);
+        decoded = decodeWithZXing(enhanced.bitmap);
+      }
+
+      // Pass C: Fallback to jsQR with inversion enabled
+      if (!decoded) {
+        const jsQrResult = jsQR(
+          new Uint8ClampedArray(image.bitmap.data),
+          image.bitmap.width,
+          image.bitmap.height,
+          { inversionAttempts: 'attemptBoth' }
+        );
+        if (jsQrResult && jsQrResult.data) {
+          qrText = jsQrResult.data;
+          qrRawBytes = jsQrResult.binaryData ? new Uint8Array(jsQrResult.binaryData) : undefined;
+        }
+      } else {
+        qrText = decoded.text;
+        qrRawBytes = decoded.rawBytes;
+      }
+
+      // STRICT FAIL-CLOSED: Fails immediately on selfies, blank photos, memes
+      if (!qrText && !qrRawBytes) {
         return NextResponse.json(
           { 
             success: false, 
@@ -92,27 +164,29 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // C. PARSE DEMOGRAPHICS & EXTRACT BIRTH YEAR
+      // 3. PARSE DEMOGRAPHICS & EXTRACT BIRTH YEAR
       let birthYear: number | null = null;
 
-      // Check legacy/offline XML format
-      const xmlDob = qrCode.data.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
-      const xmlYob = qrCode.data.match(/yob="(\d{4})"/i);
+      // Check legacy XML format
+      const xmlDob = qrText.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
+      const xmlYob = qrText.match(/yob="(\d{4})"/i);
 
       if (xmlDob) {
         birthYear = parseInt(xmlDob[3], 10);
       } else if (xmlYob) {
         birthYear = parseInt(xmlYob[1], 10);
       } else {
-        // Parse modern Secure QR (compressed binary / BigInt string)
+        // Modern Secure QR (BigInt numeric string or raw compressed byte stream)
         try {
           let rawBytes: Buffer;
-          if (/^\d+$/.test(qrCode.data.trim())) {
-            let hex = BigInt(qrCode.data.trim()).toString(16);
+          if (/^\d+$/.test(qrText.trim())) {
+            let hex = BigInt(qrText.trim()).toString(16);
             if (hex.length % 2 !== 0) hex = '0' + hex;
             rawBytes = Buffer.from(hex, 'hex');
+          } else if (qrRawBytes) {
+            rawBytes = Buffer.from(qrRawBytes);
           } else {
-            rawBytes = Buffer.from(qrCode.binaryData || qrCode.data);
+            rawBytes = Buffer.from(qrText, 'binary');
           }
 
           let decompressed: Buffer;
@@ -133,7 +207,7 @@ export async function POST(req: NextRequest) {
             if (decompressed[i] === 255) {
               fields.push(decompressed.subarray(start, i).toString('utf-8'));
               start = i + 1;
-              if (fields.length >= 6) break;
+              if (fields.length >= 8) break;
             }
           }
 
@@ -151,11 +225,11 @@ export async function POST(req: NextRequest) {
             if (fallback) birthYear = parseInt(fallback[3], 10);
           }
         } catch (e) {
-          console.error("Payload extraction failed:", e);
+          console.error("Payload decompression error:", e);
         }
       }
 
-      // Reject non-Aadhaar QR codes (e.g., website URLs, payment QRs)
+      // Reject non-Aadhaar QR codes (e.g. Wi-Fi or payment QRs)
       if (!birthYear || isNaN(birthYear)) {
         return NextResponse.json(
           { 
@@ -167,7 +241,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // D. MATHEMATICAL 18+ ASSERTION
+      // 4. MATHEMATICAL 18+ ASSERTION
       const currentYear = new Date().getFullYear();
       const calculatedAge = currentYear - birthYear;
 
@@ -193,7 +267,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. ATTESTATION & SUPABASE AUDIT
+    // 5. SUPABASE AUDIT LOGGING & CREDIT DEDUCTION
     const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -205,7 +279,6 @@ export async function POST(req: NextRequest) {
     const serviceKey = rawKey.trim().replace(/^["']|["']$/g, '');
     const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    // Decrement credits
     const { data: merchant, error: fetchErr } = await supabase
       .from('merchant_accounts')
       .select('verification_credits')
