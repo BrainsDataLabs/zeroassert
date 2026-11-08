@@ -30,8 +30,7 @@ function generateAttestationProof(checkoutId: string, shopDomain: string, signat
     .digest('hex');
 }
 
-// ZXing high-density decoder
-function decodeWithZXing(imageBitmap: { width: number; height: number; data: Buffer }): { text: string; rawBytes?: Uint8Array } | null {
+function decodeWithZXing(imageBitmap: { width: number; height: number; data: Buffer }): string | null {
   try {
     const { width, height, data } = imageBitmap;
     const len = width * height;
@@ -52,10 +51,7 @@ function decodeWithZXing(imageBitmap: { width: number; height: number; data: Buf
     reader.setHints(hints);
 
     const result = reader.decode(binaryBitmap);
-    return {
-      text: result.getText(),
-      rawBytes: result.getRawBytes(),
-    };
+    return result.getText();
   } catch {
     return null;
   }
@@ -110,9 +106,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 1. NORMALIZE MASSIVE PHONE CAMERA / SCREENSHOT RESOLUTIONS
-      // High-res captures (e.g. 1080x2400 or 4000x3000) cause finder-pattern misses.
-      // Scaling down to max dimension 1400 brings dense modules to the optimal pixel ratio.
+      // 1. RESOLUTION NORMALIZATION
       const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
       if (maxDim > 1400) {
         if (image.bitmap.width > image.bitmap.height) {
@@ -122,38 +116,27 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // 2. MULTI-PASS DECODING
-      let qrText = '';
-      let qrRawBytes: Uint8Array | undefined;
+      // 2. SCAN MATRIX
+      let qrText: string | null = decodeWithZXing(image.bitmap);
 
-      // Pass A: ZXing on normalized image
-      let decoded = decodeWithZXing(image.bitmap);
-
-      // Pass B: ZXing with enhanced contrast (for faint or shaded camera scans)
-      if (!decoded) {
-        const enhanced = image.clone().greyscale().contrast(0.25);
-        decoded = decodeWithZXing(enhanced.bitmap);
+      if (!qrText) {
+        const enhanced = image.clone().greyscale().contrast(0.3);
+        qrText = decodeWithZXing(enhanced.bitmap);
       }
 
-      // Pass C: Fallback to jsQR with inversion enabled
-      if (!decoded) {
+      if (!qrText) {
         const jsQrResult = jsQR(
           new Uint8ClampedArray(image.bitmap.data),
           image.bitmap.width,
           image.bitmap.height,
           { inversionAttempts: 'attemptBoth' }
         );
-        if (jsQrResult && jsQrResult.data) {
+        if (jsQrResult?.data) {
           qrText = jsQrResult.data;
-          qrRawBytes = jsQrResult.binaryData ? new Uint8Array(jsQrResult.binaryData) : undefined;
         }
-      } else {
-        qrText = decoded.text;
-        qrRawBytes = decoded.rawBytes;
       }
 
-      // STRICT FAIL-CLOSED: Fails immediately on selfies, blank photos, memes
-      if (!qrText && !qrRawBytes) {
+      if (!qrText) {
         return NextResponse.json(
           { 
             success: false, 
@@ -164,72 +147,85 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 3. PARSE DEMOGRAPHICS & EXTRACT BIRTH YEAR
+      // 3. PARSE DEMOGRAPHIC DATA & EXTRACT BIRTH YEAR
       let birthYear: number | null = null;
+      const rawString = qrText.trim();
 
-      // Check legacy XML format
-      const xmlDob = qrText.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
-      const xmlYob = qrText.match(/yob="(\d{4})"/i);
+      // Check legacy/offline XML
+      const xmlDob = rawString.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
+      const xmlYob = rawString.match(/yob="(\d{4})"/i);
 
       if (xmlDob) {
         birthYear = parseInt(xmlDob[3], 10);
       } else if (xmlYob) {
         birthYear = parseInt(xmlYob[1], 10);
       } else {
-        // Modern Secure QR (BigInt numeric string or raw compressed byte stream)
-        try {
-          let rawBytes: Buffer;
-          if (/^\d+$/.test(qrText.trim())) {
-            let hex = BigInt(qrText.trim()).toString(16);
-            if (hex.length % 2 !== 0) hex = '0' + hex;
-            rawBytes = Buffer.from(hex, 'hex');
-          } else if (qrRawBytes) {
-            rawBytes = Buffer.from(qrRawBytes);
-          } else {
-            rawBytes = Buffer.from(qrText, 'binary');
-          }
+        // Modern Secure QR: Large base-10 number string
+        const cleanDigits = rawString.replace(/[^0-9]/g, '');
 
-          let decompressed: Buffer;
+        if (cleanDigits.length > 300) {
           try {
-            decompressed = zlib.inflateRawSync(rawBytes);
-          } catch {
+            // Convert Base-10 BigInt to raw byte stream
+            let hex = BigInt(cleanDigits).toString(16);
+            if (hex.length % 2 !== 0) hex = '0' + hex;
+            const compressed = Buffer.from(hex, 'hex');
+
+            // Decompress via GZIP / Deflate
+            let decompressed: Buffer | null = null;
             try {
-              decompressed = zlib.inflateSync(rawBytes);
+              decompressed = zlib.gunzipSync(compressed);
             } catch {
-              decompressed = rawBytes;
+              try {
+                decompressed = zlib.unzipSync(compressed);
+              } catch {
+                try {
+                  decompressed = zlib.inflateRawSync(compressed);
+                } catch (e) {
+                  console.error('All decompression strategies failed:', e);
+                }
+              }
             }
-          }
 
-          // Fields delimited by 255 (0xFF): [Email/Mob flag, Ref ID, Name, DOB, Gender...]
-          const fields: string[] = [];
-          let start = 0;
-          for (let i = 0; i < decompressed.length; i++) {
-            if (decompressed[i] === 255) {
-              fields.push(decompressed.subarray(start, i).toString('utf-8'));
-              start = i + 1;
-              if (fields.length >= 8) break;
+            if (decompressed) {
+              // Extract fields delimited by 255 (0xFF)
+              const fields: string[] = [];
+              let start = 0;
+              for (let i = 0; i < decompressed.length; i++) {
+                if (decompressed[i] === 255) {
+                  fields.push(decompressed.subarray(start, i).toString('latin1'));
+                  start = i + 1;
+                  if (fields.length >= 10) break;
+                }
+              }
+
+              // Field index 3 contains DOB (DD-MM-YYYY or DD/MM/YYYY)
+              if (fields.length > 3) {
+                const dobField = fields[3];
+                const match = dobField.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+                if (match) {
+                  birthYear = parseInt(match[3], 10);
+                } else if (/^\d{4}$/.test(dobField.trim())) {
+                  birthYear = parseInt(dobField.trim(), 10);
+                }
+              }
+
+              // Fallback scan across all extracted text fields
+              if (!birthYear) {
+                for (const field of fields) {
+                  const m = field.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+                  if (m) {
+                    birthYear = parseInt(m[3], 10);
+                    break;
+                  }
+                }
+              }
             }
+          } catch (numErr) {
+            console.error('BigInt payload extraction error:', numErr);
           }
-
-          for (const field of fields) {
-            const m = field.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-            if (m) {
-              birthYear = parseInt(m[3], 10);
-              break;
-            }
-          }
-
-          if (!birthYear) {
-            const fullText = decompressed.toString('utf-8');
-            const fallback = fullText.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-            if (fallback) birthYear = parseInt(fallback[3], 10);
-          }
-        } catch (e) {
-          console.error("Payload decompression error:", e);
         }
       }
 
-      // Reject non-Aadhaar QR codes (e.g. Wi-Fi or payment QRs)
       if (!birthYear || isNaN(birthYear)) {
         return NextResponse.json(
           { 
@@ -267,7 +263,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5. SUPABASE AUDIT LOGGING & CREDIT DEDUCTION
+    // 5. ATTESTATION PROOF & SUPABASE AUDIT
     const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
