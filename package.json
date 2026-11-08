@@ -17,7 +17,9 @@
     "anon-aadhaar-react": "latest",
     "@supabase/supabase-js": "^2.39.0",
     "@anon-aadhaar/core": "^2.0.0",
-    "@anon-aadhaar/react": "^2.0.0"
+    "@anon-aadhaar/react": "^2.0.0",
+    "jsqr": "^1.4.0",
+    "jimp": "^0.22.10"
     
   },
   "devDependencies": {
