@@ -1,24 +1,36 @@
-import { NextRequest, NextResponse } from "next/server";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
 import crypto from "crypto";
+
 import {
   decodeAadhaarQR,
 } from "@/app/lib/image-qr";
+
 import {
   parseAadhaarSecureQR,
   isAdult,
 } from "@/app/lib/aadhaar-qr";
 
-export const dynamic = "force-dynamic";
+export const dynamic =
+  "force-dynamic";
 
-export const runtime = "nodejs";
+export const runtime =
+  "nodejs";
 
 function verifyUIDAISignature(
   signedData: Buffer,
   signature: Buffer
 ): boolean {
-  const publicKey = process.env.UIDAI_PUBLIC_KEY;
+  const publicKey =
+    process.env
+      .UIDAI_PUBLIC_KEY;
 
-  if (!publicKey) {
+  if (
+    !publicKey
+  ) {
     throw new Error(
       "UIDAI_PUBLIC_KEY is not configured."
     );
@@ -28,26 +40,33 @@ function verifyUIDAISignature(
     "sha256",
     signedData,
     {
-      key: publicKey,
-      padding: crypto.constants.RSA_PKCS1_PADDING,
+      key:
+        publicKey,
+      padding:
+        crypto.constants
+          .RSA_PKCS1_PADDING,
     },
     signature
   );
 }
 
 function cleanupBuffers(
-  ...buffers: Array<Buffer | undefined | null>
+  ...buffers: Array<
+    Buffer |
+      undefined |
+      null
+  >
 ) {
-  /*
-   * Best-effort memory cleanup.
-   *
-   * Node/V8 does not provide guaranteed secure memory
-   * erasure, so this should not be described as a
-   * cryptographic secure-memory wipe.
-   */
-  for (const buffer of buffers) {
-    if (buffer) {
-      buffer.fill(0);
+  for (
+    const buffer of
+      buffers
+  ) {
+    if (
+      buffer
+    ) {
+      buffer.fill(
+        0
+      );
     }
   }
 }
@@ -55,93 +74,157 @@ function cleanupBuffers(
 export async function POST(
   req: NextRequest
 ) {
-  let imageBuffer: Buffer | null = null;
-  let signedData: Buffer | null = null;
-  let signature: Buffer | null = null;
+  let imageBuffer:
+    | Buffer
+    | null =
+    null;
+
+  let signedData:
+    | Buffer
+    | null =
+    null;
+
+  let signature:
+    | Buffer
+    | null =
+    null;
 
   try {
-    const formData = await req.formData();
+    const formData =
+      await req.formData();
 
     const file =
-      formData.get("file") as File | null;
+      formData.get(
+        "file"
+      ) as File |
+        null;
 
-    if (!file) {
+    if (
+      !file
+    ) {
       return NextResponse.json(
         {
-          success: false,
-          age_verified: false,
-          error: "No image supplied.",
+          success:
+            false,
+          age_verified:
+            false,
+          error:
+            "No image supplied.",
         },
-        { status: 400 }
+        {
+          status:
+            400,
+        }
       );
     }
 
     if (
       !file.type ||
-      !file.type.startsWith("image/")
+      !file.type.startsWith(
+        "image/"
+      )
     ) {
       return NextResponse.json(
         {
-          success: false,
-          age_verified: false,
-          error: "Uploaded file is not an image.",
+          success:
+            false,
+          age_verified:
+            false,
+          error:
+            "Uploaded file is not an image.",
         },
-        { status: 400 }
+        {
+          status:
+            400,
+        }
       );
     }
 
-    if (file.size > 10 * 1024 * 1024) {
+    if (
+      file.size >
+      10 *
+        1024 *
+        1024
+    ) {
       return NextResponse.json(
         {
-          success: false,
-          age_verified: false,
-          error: "Image exceeds the 10 MB limit.",
+          success:
+            false,
+          age_verified:
+            false,
+          error:
+            "Image exceeds the 10 MB limit.",
         },
-        { status: 413 }
+        {
+          status:
+            413,
+        }
       );
     }
 
-    imageBuffer = Buffer.from(
-      await file.arrayBuffer()
-    );
+    imageBuffer =
+      Buffer.from(
+        await file.arrayBuffer()
+      );
 
     /*
      * STEP 1
-     * Detect and decode Aadhaar Secure QR.
+     *
+     * Locate Aadhaar Secure QR using:
+     * - ZXing
+     * - jsQR
+     * - preprocessing
+     * - tiled search
+     * - upscaling
      */
-    const qr = await decodeAadhaarQR(
-      imageBuffer
-    );
+    const qr =
+      await decodeAadhaarQR(
+        imageBuffer
+      );
 
-    if (!qr) {
+    if (
+      !qr
+    ) {
       return NextResponse.json(
         {
-          success: false,
-          age_verified: false,
+          success:
+            false,
+          age_verified:
+            false,
           error:
-            "Aadhaar Secure QR could not be detected. Make sure the entire large QR, including all four finder corners, is visible.",
+            "Aadhaar Secure QR could not be detected. Make sure the complete large QR and all four finder corners are visible.",
         },
-        { status: 400 }
+        {
+          status:
+            400,
+        }
       );
     }
 
     /*
      * STEP 2
-     * Parse decimal QR payload -> binary -> gzip
-     * -> signed data + RSA signature.
+     *
+     * Decimal QR payload
+     * -> binary
+     * -> gzip
+     * -> signed data
+     * -> RSA signature
      */
     const parsed =
-      parseAadhaarSecureQR(qr.data);
+      parseAadhaarSecureQR(
+        qr.data
+      );
 
-    signedData = parsed.signedData;
-    signature = parsed.signature;
+    signedData =
+      parsed.signedData;
+
+    signature =
+      parsed.signature;
 
     /*
      * STEP 3
-     * Verify UIDAI signature.
      *
-     * Never continue to the age decision if
-     * signature validation fails.
+     * Cryptographic validation.
      */
     const signatureValid =
       verifyUIDAISignature(
@@ -149,74 +232,110 @@ export async function POST(
         signature
       );
 
-    if (!signatureValid) {
+    if (
+      !signatureValid
+    ) {
       return NextResponse.json(
         {
-          success: false,
-          age_verified: false,
+          success:
+            false,
+          age_verified:
+            false,
           error:
             "Aadhaar Secure QR signature verification failed.",
         },
-        { status: 401 }
+        {
+          status:
+            401,
+        }
       );
     }
 
     /*
      * STEP 4
-     * Evaluate the age predicate.
+     *
+     * Age predicate.
      */
     const ageVerified =
-      isAdult(parsed.birthYear);
+      isAdult(
+        parsed.birthYear
+      );
 
-    if (!ageVerified) {
+    if (
+      !ageVerified
+    ) {
       return NextResponse.json(
         {
-          success: false,
-          age_verified: false,
+          success:
+            false,
+          age_verified:
+            false,
           error:
             "Age requirement of 18 years was not met.",
         },
-        { status: 403 }
+        {
+          status:
+            403,
+        }
       );
     }
 
     /*
      * STEP 5
-     * Generate an opaque verification token.
      *
-     * Do NOT include:
+     * Return only an opaque verification
+     * token to the client.
+     *
+     * Never return:
      * - Aadhaar number
      * - name
      * - DOB
      * - QR payload
      * - image
      */
-    const proofToken = crypto
-      .createHash("sha256")
-      .update(
-        crypto.randomBytes(32)
-      )
-      .digest("hex");
+    const proofToken =
+      crypto
+        .createHash(
+          "sha256"
+        )
+        .update(
+          crypto.randomBytes(
+            32
+          )
+        )
+        .digest(
+          "hex"
+        );
 
     return NextResponse.json(
       {
-        success: true,
-        age_verified: true,
-        proof_token: proofToken,
-        qr_decoder: qr.method,
+        success:
+          true,
+        age_verified:
+          true,
+        proof_token:
+          proofToken,
+        qr_decoder:
+          qr.method,
         message:
           "Age verified successfully.",
       },
       {
-        status: 200,
-        headers: {
-          "Cache-Control":
-            "no-store, max-age=0",
-          Pragma: "no-cache",
-        },
+        status:
+          200,
+        headers:
+          {
+            "Cache-Control":
+              "no-store, max-age=0",
+            Pragma:
+              "no-cache",
+          },
       }
     );
-  } catch (error: any) {
+
+  } catch (
+    error: any
+  ) {
     console.error(
       "[ZeroAssert] ephemeral verification failed:",
       error?.message
@@ -224,32 +343,39 @@ export async function POST(
 
     return NextResponse.json(
       {
-        success: false,
-        age_verified: false,
+        success:
+          false,
+        age_verified:
+          false,
         error:
           error?.message ||
           "Ephemeral verification failed.",
       },
       {
-        status: 500,
-        headers: {
-          "Cache-Control":
-            "no-store, max-age=0",
-        },
+        status:
+          500,
+        headers:
+          {
+            "Cache-Control":
+              "no-store, max-age=0",
+          },
       }
     );
+
   } finally {
-    /*
-     * Best-effort cleanup.
-     */
     cleanupBuffers(
       imageBuffer,
       signedData,
       signature
     );
 
-    imageBuffer = null;
-    signedData = null;
-    signature = null;
+    imageBuffer =
+      null;
+
+    signedData =
+      null;
+
+    signature =
+      null;
   }
 }
