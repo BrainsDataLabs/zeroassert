@@ -1,380 +1,255 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import crypto from 'crypto';
-import zlib from 'zlib';
-import Jimp from 'jimp';
-import jsQR from 'jsqr';
+import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import {
-  MultiFormatReader,
-  BarcodeFormat,
-  DecodeHintType,
-  RGBLuminanceSource,
-  BinaryBitmap,
-  HybridBinarizer,
-  GlobalHistogramBinarizer,
-} from '@zxing/library';
-import { verify } from '@anon-aadhaar/core';
+  decodeAadhaarQR,
+} from "@/app/lib/image-qr";
+import {
+  parseAadhaarSecureQR,
+  isAdult,
+} from "@/app/lib/aadhaar-qr";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
-const UIDAI_PUBLIC_KEY = process.env.UIDAI_PUBLIC_KEY || `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA04...
------END PUBLIC KEY-----`;
+export const runtime = "nodejs";
 
-function sanitizeUrl(rawUrl: string): string {
-  let url = rawUrl.trim().replace(/^["']|["']$/g, '');
-  const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
-  if (dashMatch) return `https://${dashMatch[1]}.supabase.co`;
-  return url.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
+function verifyUIDAISignature(
+  signedData: Buffer,
+  signature: Buffer
+): boolean {
+  const publicKey = process.env.UIDAI_PUBLIC_KEY;
+
+  if (!publicKey) {
+    throw new Error(
+      "UIDAI_PUBLIC_KEY is not configured."
+    );
+  }
+
+  return crypto.verify(
+    "sha256",
+    signedData,
+    {
+      key: publicKey,
+      padding: crypto.constants.RSA_PKCS1_PADDING,
+    },
+    signature
+  );
 }
 
-function generateAttestationProof(checkoutId: string, shopDomain: string, signatureHash: string): string {
-  const secret = process.env.ATTESTATION_SECRET || 'zeroassert_audit_key_sec_9918';
-  return crypto
-    .createHmac('sha256', secret)
-    .update(`${checkoutId}:${shopDomain}:${signatureHash}:${Date.now()}`)
-    .digest('hex');
-}
-
-function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer }): string | null {
-  try {
-    const { width, height, data } = imageBitmap;
-    const len = width * height;
-    const luminances = new Uint8ClampedArray(len);
-
-    for (let i = 0; i < len; i++) {
-      const offset = i * 4;
-      luminances[i] = (data[offset] * 77 + data[offset + 1] * 150 + data[offset + 2] * 29) >> 8;
+function cleanupBuffers(
+  ...buffers: Array<Buffer | undefined | null>
+) {
+  /*
+   * Best-effort memory cleanup.
+   *
+   * Node/V8 does not provide guaranteed secure memory
+   * erasure, so this should not be described as a
+   * cryptographic secure-memory wipe.
+   */
+  for (const buffer of buffers) {
+    if (buffer) {
+      buffer.fill(0);
     }
-
-    const luminanceSource = new RGBLuminanceSource(luminances, width, height);
-    const reader = new MultiFormatReader();
-    const hints = new Map();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    reader.setHints(hints);
-
-    try {
-      const bitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
-      return reader.decode(bitmap).getText();
-    } catch {}
-
-    try {
-      const bitmap = new BinaryBitmap(new GlobalHistogramBinarizer(luminanceSource));
-      return reader.decode(bitmap).getText();
-    } catch {}
-
-    return null;
-  } catch {
-    return null;
   }
 }
 
-function tryDecompress(buf: Buffer): Buffer | null {
-  try { return zlib.gunzipSync(buf); } catch {}
-  try { return zlib.unzipSync(buf); } catch {}
-  try { return zlib.inflateRawSync(buf); } catch {}
-  try { return zlib.inflateSync(buf); } catch {}
-  return null;
-}
+export async function POST(
+  req: NextRequest
+) {
+  let imageBuffer: Buffer | null = null;
+  let signedData: Buffer | null = null;
+  let signature: Buffer | null = null;
 
-export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
-    const checkout_id = (formData.get('checkout_id') as string) || 'chk_live_session_9823';
-    const shop_domain = (formData.get('shop_domain') as string) || 'standalone-test.myshopify.com';
-    const bypass_simulation = formData.get('bypass_simulation') === 'true';
-    
-    const file = formData.get('file') as File | null;
-    const rawProof = formData.get('proofData') as string | null;
 
-    if (bypass_simulation && process.env.NODE_ENV === 'production') {
-      return NextResponse.json(
-        { success: false, age_verified: false, error: 'Simulation mode is disabled in production.' },
-        { status: 403 }
-      );
-    }
+    const file =
+      formData.get("file") as File | null;
 
-    if (!file && !rawProof && !bypass_simulation) {
+    if (!file) {
       return NextResponse.json(
-        { success: false, age_verified: false, error: 'No verification payload provided.' },
+        {
+          success: false,
+          age_verified: false,
+          error: "No image supplied.",
+        },
         { status: 400 }
       );
     }
 
-    let isAgeVerified = false;
-    let signatureHash = '';
-
-    if (bypass_simulation) {
-      isAgeVerified = true;
-      signatureHash = 'simulated_' + crypto.randomBytes(8).toString('hex');
-    
-    // PATH 1: ZKP Proof Provided via Anon Aadhaar Frontend
-    } else if (rawProof) {
-      try {
-        const pcd = JSON.parse(rawProof);
-        // Enforce strict production UIDAI signature check (test mode disabled)
-        const isSignatureValid = await verify(pcd, false);
-        if (!isSignatureValid) {
-          return NextResponse.json(
-            { success: false, age_verified: false, error: 'Cryptographic ZK proof signature rejected.' },
-            { status: 401 }
-          );
-        }
-        // If ZKP passes, assertion is proven
-        isAgeVerified = true;
-        signatureHash = pcd.proof?.nullifier || crypto.randomBytes(8).toString('hex');
-      } catch (e) {
-        return NextResponse.json(
-          { success: false, age_verified: false, error: 'Invalid ZKP payload.' },
-          { status: 400 }
-        );
-      }
-
-    // PATH 2: Raw Image Provided for Ephemeral Backend Processing
-    } else if (file) {
-      if (!file.type.startsWith('image/')) {
-        return NextResponse.json(
-          { success: false, age_verified: false, error: 'Uploaded file is not a valid image.' },
-          { status: 400 }
-        );
-      }
-
-      const arrayBuffer = await file.arrayBuffer();
-      const imageBuffer = Buffer.from(arrayBuffer);
-      let image: any;
-      try {
-        image = await Jimp.read(imageBuffer);
-      } catch (err) {
-        return NextResponse.json(
-          { success: false, age_verified: false, error: 'Corrupted image: Unable to process pixels.' },
-          { status: 400 }
-        );
-      }
-
-      const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
-      if (maxDim > 2400) {
-        if (image.bitmap.width > image.bitmap.height) {
-          image.resize(2400, Jimp.AUTO);
-        } else {
-          image.resize(Jimp.AUTO, 2400);
-        }
-      }
-
-      // --- ADVANCED SCANNING PIPELINE ---
-      let qrText: string | null = decodeBitmap(image.bitmap);
-
-      let paddedImage: any;
-      if (!qrText) {
-        paddedImage = new Jimp(image.bitmap.width + 120, image.bitmap.height + 120, 0xFFFFFFFF);
-        paddedImage.composite(image, 60, 60);
-        qrText = decodeBitmap(paddedImage.bitmap);
-      }
-      if (!qrText && paddedImage) {
-        const scaled = paddedImage.clone().scale(2, Jimp.RESIZE_NEAREST_NEIGHBOR);
-        qrText = decodeBitmap(scaled.bitmap);
-      }
-      if (!qrText) {
-        const enhanced = image.clone().greyscale().contrast(0.3).normalize();
-        qrText = decodeBitmap(enhanced.bitmap);
-      }
-      if (!qrText) {
-        const thresholded = image.clone().greyscale().threshold({ max: 128 });
-        qrText = decodeBitmap(thresholded.bitmap);
-      }
-      if (!qrText) {
-        for (const angle of [90, 180, 270]) {
-          const rotated = image.clone().rotate(angle);
-          qrText = decodeBitmap(rotated.bitmap);
-          if (qrText) break;
-        }
-      }
-      if (!qrText) {
-        const jsQrResult = jsQR(
-          new Uint8ClampedArray(image.bitmap.data),
-          image.bitmap.width,
-          image.bitmap.height,
-          { inversionAttempts: 'attemptBoth' }
-        );
-        if (jsQrResult?.data) {
-          qrText = jsQrResult.data;
-        }
-      }
-
-      if (!qrText) {
-        return NextResponse.json(
-          { success: false, age_verified: false, error: 'No QR code detected. If you cropped the image, ensure all four corners of the QR code are fully visible.' },
-          { status: 400 }
-        );
-      }
-
-      // --- DEMOGRAPHIC EXTRACTION & SIGNATURE VALIDATION ---
-      let birthYear: number | null = null;
-      const rawString = qrText.trim();
-      let decompressed: Buffer | null = null;
-
-      const xmlDob = rawString.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
-      const xmlYob = rawString.match(/yob="(\d{4})"/i);
-
-      if (xmlDob) {
-        birthYear = parseInt(xmlDob[3], 10);
-      } else if (xmlYob) {
-        birthYear = parseInt(xmlYob[1], 10);
-      } else {
-        const cleanDigits = rawString.replace(/[^0-9]/g, '');
-        if (cleanDigits.length > 300) {
-          try {
-            let hex = BigInt(cleanDigits).toString(16);
-            if (hex.length % 2 !== 0) hex = '0' + hex;
-            const compressed = Buffer.from(hex, 'hex');
-            decompressed = tryDecompress(compressed);
-          } catch (e) {}
-        }
-        if (!decompressed) {
-          const rawBytes = Buffer.from(rawString, 'latin1');
-          decompressed = tryDecompress(rawBytes);
-        }
-        if (!decompressed) {
-          const rawBytes = Buffer.from(rawString, 'latin1');
-          for (let i = 0; i < rawBytes.length - 1; i++) {
-            if (rawBytes[i] === 0x1f && rawBytes[i + 1] === 0x8b) {
-              decompressed = tryDecompress(rawBytes.subarray(i));
-              if (decompressed) break;
-            }
-          }
-        }
-
-        if (decompressed) {
-          // STRICT CRYPTOGRAPHIC ASSERTION
-          // Ensure the payload has the 256-byte UIDAI RSA-2048 signature appended
-          if (decompressed.length > 256) {
-            const signature = decompressed.subarray(decompressed.length - 256);
-            const signedData = decompressed.subarray(0, decompressed.length - 256);
-            
-            // Validate the raw bytes against the official public key to prevent spoofing
-            const isValidSignature = crypto.verify('SHA256', signedData, UIDAI_PUBLIC_KEY, signature);
-            if (!isValidSignature && process.env.NODE_ENV === 'production') {
-              return NextResponse.json(
-                { success: false, age_verified: false, error: 'Forged QR: UIDAI Cryptographic signature is invalid.' },
-                { status: 401 }
-              );
-            }
-          } else {
-            return NextResponse.json(
-              { success: false, age_verified: false, error: 'Invalid QR payload format (Missing Signature).' },
-              { status: 401 }
-            );
-          }
-
-          const fields: string[] = [];
-          let start = 0;
-          for (let i = 0; i < decompressed.length - 256; i++) {
-            if (decompressed[i] === 255) {
-              fields.push(decompressed.subarray(start, i).toString('latin1'));
-              start = i + 1;
-              if (fields.length >= 10) break;
-            }
-          }
-
-          if (fields.length > 3) {
-            const dobMatch = fields[3].match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-            if (dobMatch) {
-              birthYear = parseInt(dobMatch[3], 10);
-            } else if (/^\d{4}$/.test(fields[3].trim())) {
-              birthYear = parseInt(fields[3].trim(), 10);
-            }
-          }
-
-          if (!birthYear) {
-            for (const f of fields) {
-              const m = f.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-              if (m) {
-                birthYear = parseInt(m[3], 10);
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (!birthYear || isNaN(birthYear)) {
-        return NextResponse.json(
-          { success: false, age_verified: false, error: 'Invalid QR code. The uploaded QR is not an official Aadhaar secure document.' },
-          { status: 400 }
-        );
-      }
-
-      // --- STATUTORY 18+ ASSERTION ---
-      const currentYear = new Date().getFullYear();
-      const calculatedAge = currentYear - birthYear;
-
-      if (calculatedAge < 18) {
-        return NextResponse.json(
-          { success: false, age_verified: false, error: 'Verification failed: Age requirement (18+) not met.' },
-          { status: 403 }
-        );
-      }
-
-      isAgeVerified = true;
-      signatureHash = crypto.createHash('sha256').update(imageBuffer).digest('hex');
+    if (
+      !file.type ||
+      !file.type.startsWith("image/")
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          age_verified: false,
+          error: "Uploaded file is not an image.",
+        },
+        { status: 400 }
+      );
     }
 
-    if (!isAgeVerified) {
+    if (file.size > 10 * 1024 * 1024) {
       return NextResponse.json(
-        { success: false, age_verified: false, error: 'Verification failed.' },
+        {
+          success: false,
+          age_verified: false,
+          error: "Image exceeds the 10 MB limit.",
+        },
+        { status: 413 }
+      );
+    }
+
+    imageBuffer = Buffer.from(
+      await file.arrayBuffer()
+    );
+
+    /*
+     * STEP 1
+     * Detect and decode Aadhaar Secure QR.
+     */
+    const qr = await decodeAadhaarQR(
+      imageBuffer
+    );
+
+    if (!qr) {
+      return NextResponse.json(
+        {
+          success: false,
+          age_verified: false,
+          error:
+            "Aadhaar Secure QR could not be detected. Make sure the entire large QR, including all four finder corners, is visible.",
+        },
+        { status: 400 }
+      );
+    }
+
+    /*
+     * STEP 2
+     * Parse decimal QR payload -> binary -> gzip
+     * -> signed data + RSA signature.
+     */
+    const parsed =
+      parseAadhaarSecureQR(qr.data);
+
+    signedData = parsed.signedData;
+    signature = parsed.signature;
+
+    /*
+     * STEP 3
+     * Verify UIDAI signature.
+     *
+     * Never continue to the age decision if
+     * signature validation fails.
+     */
+    const signatureValid =
+      verifyUIDAISignature(
+        signedData,
+        signature
+      );
+
+    if (!signatureValid) {
+      return NextResponse.json(
+        {
+          success: false,
+          age_verified: false,
+          error:
+            "Aadhaar Secure QR signature verification failed.",
+        },
+        { status: 401 }
+      );
+    }
+
+    /*
+     * STEP 4
+     * Evaluate the age predicate.
+     */
+    const ageVerified =
+      isAdult(parsed.birthYear);
+
+    if (!ageVerified) {
+      return NextResponse.json(
+        {
+          success: false,
+          age_verified: false,
+          error:
+            "Age requirement of 18 years was not met.",
+        },
         { status: 403 }
       );
     }
 
-    // --- AUDIT LOGGING & SUPABASE REVENUE LOGIC ---
-    const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    /*
+     * STEP 5
+     * Generate an opaque verification token.
+     *
+     * Do NOT include:
+     * - Aadhaar number
+     * - name
+     * - DOB
+     * - QR payload
+     * - image
+     */
+    const proofToken = crypto
+      .createHash("sha256")
+      .update(
+        crypto.randomBytes(32)
+      )
+      .digest("hex");
 
-    if (!rawUrl || !rawKey) {
-      return NextResponse.json({ success: false, error: 'Server configuration error' }, { status: 500 });
-    }
-
-    const supabaseUrl = sanitizeUrl(rawUrl);
-    const serviceKey = rawKey.trim().replace(/^["']|["']$/g, '');
-    const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-
-    const { data: merchant, error: fetchErr } = await supabase
-      .from('merchant_accounts')
-      .select('verification_credits')
-      .eq('shop_domain', shop_domain)
-      .maybeSingle();
-
-    let nextCredits = 80;
-    if (!fetchErr && merchant) {
-      nextCredits = Math.max(0, (merchant.verification_credits ?? 81) - 1);
-      await supabase
-        .from('merchant_accounts')
-        .update({ verification_credits: nextCredits })
-        .eq('shop_domain', shop_domain);
-    }
-
-    const proofToken = generateAttestationProof(checkout_id, shop_domain, signatureHash);
-
-    await supabase.from('age_verifications').insert([
-      {
-        checkout_id,
-        shop_domain,
-        created_at: new Date().toISOString(),
-      },
-    ]);
-
-    return NextResponse.json({
-      success: true,
-      age_verified: true,
-      checkout_id,
-      proof_token: proofToken,
-      remaining_credits: nextCredits,
-    });
-
-  } catch (err: any) {
     return NextResponse.json(
-      { success: false, age_verified: false, error: err.message || 'Server processing error' },
-      { status: 500 }
+      {
+        success: true,
+        age_verified: true,
+        proof_token: proofToken,
+        qr_decoder: qr.method,
+        message:
+          "Age verified successfully.",
+      },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control":
+            "no-store, max-age=0",
+          Pragma: "no-cache",
+        },
+      }
     );
+  } catch (error: any) {
+    console.error(
+      "[ZeroAssert] ephemeral verification failed:",
+      error?.message
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        age_verified: false,
+        error:
+          error?.message ||
+          "Ephemeral verification failed.",
+      },
+      {
+        status: 500,
+        headers: {
+          "Cache-Control":
+            "no-store, max-age=0",
+        },
+      }
+    );
+  } finally {
+    /*
+     * Best-effort cleanup.
+     */
+    cleanupBuffers(
+      imageBuffer,
+      signedData,
+      signature
+    );
+
+    imageBuffer = null;
+    signedData = null;
+    signature = null;
   }
 }
