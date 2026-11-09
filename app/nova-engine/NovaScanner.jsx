@@ -12,6 +12,7 @@ export default function NovaScanner({ onVerified }) {
   
   const workerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -36,14 +37,13 @@ export default function NovaScanner({ onVerified }) {
     };
   }, [onVerified]);
 
-  const handleImageCapture = async (e) => {
-    const file = e.target.files?.[0];
+  const processImageFile = async (file) => {
     if (!file) return;
 
     setError('');
     setLoading(true);
     setProgress(15);
-    setStatusText('Processing captured photo...');
+    setStatusText('Processing selected image...');
 
     try {
       const imageBitmap = await createImageBitmap(file);
@@ -53,7 +53,6 @@ export default function NovaScanner({ onVerified }) {
       let width = imageBitmap.width;
       let height = imageBitmap.height;
 
-      // Scale down massive camera photos for optimal matrix scanning
       const maxDim = 1200;
       if (width > maxDim || height > maxDim) {
         const scale = maxDim / Math.max(width, height);
@@ -67,15 +66,13 @@ export default function NovaScanner({ onVerified }) {
 
       const imgData = ctx.getImageData(0, 0, width, height);
 
-      setStatusText('Decoding high-density QR matrix...');
+      setStatusText('Scanning QR matrix...');
       setProgress(35);
 
-      // Attempt 1: Standard scan with inversion attempts
       let code = jsQR(imgData.data, imgData.width, imgData.height, {
         inversionAttempts: 'attemptBoth',
       });
 
-      // Attempt 2: If failed, try with high-contrast thresholding
       if (!code) {
         setStatusText('Optimizing image contrast...');
         const data = imgData.data;
@@ -92,18 +89,17 @@ export default function NovaScanner({ onVerified }) {
       }
 
       if (!code || !code.data) {
-        throw new Error('No QR code detected. Ensure all four corners of the QR code are fully visible.');
+        throw new Error('No QR code detected. Ensure all four corners are fully visible.');
       }
 
-      setStatusText('QR successfully decoded! Generating ZK proof...');
+      setStatusText('QR decoded! Generating ZK proof...');
       setProgress(50);
 
-      // Hand off decoded payload to Web Worker for client-side proving
       workerRef.current.postMessage({ qrData: code.data });
 
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Could not read QR code. Ensure good lighting and frame the QR code clearly.');
+      setError(err.message || 'Could not read QR code from image.');
       setLoading(false);
     }
   };
@@ -120,26 +116,43 @@ export default function NovaScanner({ onVerified }) {
         </div>
       )}
 
-      {/* Hidden canvas used for pixel manipulation and decoding */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-      {/* Hidden native file input with environment camera capture hook */}
+      {/* Standard file picker */}
       <input 
         type="file" 
         accept="image/*" 
-        capture="environment" 
         ref={fileInputRef}
-        onChange={handleImageCapture}
+        onChange={(e) => processImageFile(e.target.files?.[0])}
+        style={{ display: 'none' }}
+      />
+
+      {/* Native camera snapper */}
+      <input 
+        type="file" 
+        accept="image/*" 
+        capture="environment"
+        ref={cameraInputRef}
+        onChange={(e) => processImageFile(e.target.files?.[0])}
         style={{ display: 'none' }}
       />
 
       {!loading ? (
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          style={{ width: '100%', background: '#2563EB', color: '#fff', padding: '0.75rem', borderRadius: '8px', border: 'none', fontWeight: '500', cursor: 'pointer' }}
-        >
-          📷 Open Camera & Snap QR Code
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <button
+            onClick={() => cameraInputRef.current?.click()}
+            style={{ width: '100%', background: '#2563EB', color: '#fff', padding: '0.75rem', borderRadius: '8px', border: 'none', fontWeight: '500', cursor: 'pointer' }}
+          >
+            📷 Snap Photo with Camera
+          </button>
+
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={{ width: '100%', background: '#4B5563', color: '#fff', padding: '0.75rem', borderRadius: '8px', border: 'none', fontWeight: '500', cursor: 'pointer' }}
+          >
+            📁 Upload from Gallery / Files
+          </button>
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'center' }}>
           <div style={{ padding: '1rem', background: '#F3F4F6', borderRadius: '8px', fontSize: '0.9rem', color: '#374151' }}>
