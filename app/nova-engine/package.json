@@ -1,10 +1,11 @@
 {
   "name": "@zeroassert/nova-engine",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "dependencies": {
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
+    "jsqr": "^1.4.0",
     "snarkjs": "^0.7.4"
   }
 }
