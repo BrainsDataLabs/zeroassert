@@ -2,7 +2,15 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { BrowserQRCodeReader } from '@zxing/browser';
+import {
+  MultiFormatReader,
+  BarcodeFormat,
+  DecodeHintType,
+  RGBLuminanceSource,
+  BinaryBitmap,
+  HybridBinarizer,
+  GlobalHistogramBinarizer,
+} from '@zxing/library';
 
 export default function NovaScanner({ onVerified }) {
   const [loading, setLoading] = useState(false);
@@ -12,6 +20,7 @@ export default function NovaScanner({ onVerified }) {
   
   const workerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const canvasRef = useRef(null);
 
   useEffect(() => {
     // Initialize Web Worker
@@ -35,38 +44,105 @@ export default function NovaScanner({ onVerified }) {
     };
   }, [onVerified]);
 
+  // Client-side robust multi-pass ZXing decoder
+  const decodeCanvasBitmap = (ctx, width, height) => {
+    try {
+      const imgData = ctx.getImageData(0, 0, width, height);
+      const data = imgData.data;
+      const len = width * height;
+      const luminances = new Uint8ClampedArray(len);
+
+      for (let i = 0; i < len; i++) {
+        const offset = i * 4;
+        luminances[i] = (data[offset] * 77 + data[offset + 1] * 150 + data[offset + 2] * 29) >> 8;
+      }
+
+      const luminanceSource = new RGBLuminanceSource(luminances, width, height);
+      const reader = new MultiFormatReader();
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+      hints.set(DecodeHintType.TRY_HARDER, true);
+      reader.setHints(hints);
+
+      // Pass 1: HybridBinarizer
+      try {
+        const bitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
+        return reader.decode(bitmap).getText();
+      } catch {}
+
+      // Pass 2: GlobalHistogramBinarizer (handles camera shadows and glare)
+      try {
+        const bitmap = new BinaryBitmap(new GlobalHistogramBinarizer(luminanceSource));
+        return reader.decode(bitmap).getText();
+      } catch {}
+
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleImageCapture = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setError('');
     setLoading(true);
-    setProgress(10);
-    setStatusText('Processing captured image frame...');
+    setProgress(15);
+    setStatusText('Loading photo into browser memory...');
 
     try {
-      // Create image bitmap or element to extract pixels for ZXing browser reader
-      const reader = new BrowserQRCodeReader();
-      const imageUrl = URL.createObjectURL(file);
-      
-      setStatusText('Scanning QR matrix on client device...');
-      setProgress(30);
+      const imageBitmap = await createImageBitmap(file);
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
 
-      const result = await reader.decodeFromImageUrl(imageUrl);
-      
-      if (result) {
-        const rawText = result.getText();
-        setStatusText('QR successfully decoded! Generating ZK proof...');
-        setProgress(50);
-
-        // Hand off payload to Web Worker for client-side proving
-        workerRef.current.postMessage({ qrData: rawText });
-      } else {
-        throw new Error('No QR code detected in the captured photo.');
+      // Normalize dimensions (cap max dimension at 2000px for optimal matrix decoding density)
+      let width = imageBitmap.width;
+      let height = imageBitmap.height;
+      const maxDim = Math.max(width, height);
+      if (maxDim > 2000) {
+        const scale = 2000 / maxDim;
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
       }
+
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(imageBitmap, 0, 0, width, height);
+
+      setStatusText('Scanning high-density QR matrix...');
+      setProgress(35);
+
+      // Pass A: Standard decode
+      let qrText = decodeCanvasBitmap(ctx, width, height);
+
+      // Pass B: Quiet zone padding (if cropped tightly)
+      if (!qrText) {
+        setStatusText('Applying virtual border padding...');
+        const paddedCanvas = document.createElement('canvas');
+        paddedCanvas.width = width + 120;
+        paddedCanvas.height = height + 120;
+        const pCtx = paddedCanvas.getContext('2d');
+        pCtx.fillStyle = '#FFFFFF';
+        pCtx.fillRect(0, 0, paddedCanvas.width, paddedCanvas.height);
+        pCtx.drawImage(canvas, 60, 60);
+
+        qrText = decodeCanvasBitmap(pCtx, paddedCanvas.width, paddedCanvas.height);
+      }
+
+      if (!qrText) {
+        throw new Error('No QR code detected. Ensure all four corners of the QR code are fully visible.');
+      }
+
+      setStatusText('QR successfully decoded! Generating ZK proof...');
+      setProgress(50);
+
+      // Hand off payload to Web Worker for client-side proving
+      workerRef.current.postMessage({ qrData: qrText });
+
     } catch (err) {
       console.error(err);
-      setError('Could not read QR code from photo. Ensure the QR code is clearly visible and well-lit.');
+      setError(err.message || 'Could not read QR code. Ensure good lighting and frame the QR code clearly.');
       setLoading(false);
     }
   };
@@ -82,6 +158,9 @@ export default function NovaScanner({ onVerified }) {
           {error}
         </div>
       )}
+
+      {/* Hidden canvas used for pixel manipulation */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
 
       {/* Hidden native file input with environment camera capture hook */}
       <input 
