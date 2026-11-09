@@ -181,16 +181,11 @@ export function isAdult(
   birthYear: number,
   referenceDate = new Date()
 ): boolean {
-  /*
-   * Conservative year/month/day calculation.
-   *
-   * This function receives only a birth year because
-   * this fallback currently extracts year-level DOB.
-   *
-   * If the QR contains full DD/MM/YYYY, use the full
-   * date instead of this year-only fallback.
-   */
+
+  const currentYear =
+    referenceDate.getFullYear();
+
   return (
-    referenceDate.getFullYear() - birthYear >= 18
+    currentYear - birthYear >= 18
   );
 }
