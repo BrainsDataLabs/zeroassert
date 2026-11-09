@@ -2,15 +2,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  MultiFormatReader,
-  BarcodeFormat,
-  DecodeHintType,
-  RGBLuminanceSource,
-  BinaryBitmap,
-  HybridBinarizer,
-  GlobalHistogramBinarizer,
-} from '@zxing/library';
+import jsQR from 'jsqr';
 
 export default function NovaScanner({ onVerified }) {
   const [loading, setLoading] = useState(false);
@@ -44,44 +36,6 @@ export default function NovaScanner({ onVerified }) {
     };
   }, [onVerified]);
 
-  // Client-side robust multi-pass ZXing decoder
-  const decodeCanvasBitmap = (ctx, width, height) => {
-    try {
-      const imgData = ctx.getImageData(0, 0, width, height);
-      const data = imgData.data;
-      const len = width * height;
-      const luminances = new Uint8ClampedArray(len);
-
-      for (let i = 0; i < len; i++) {
-        const offset = i * 4;
-        luminances[i] = (data[offset] * 77 + data[offset + 1] * 150 + data[offset + 2] * 29) >> 8;
-      }
-
-      const luminanceSource = new RGBLuminanceSource(luminances, width, height);
-      const reader = new MultiFormatReader();
-      const hints = new Map();
-      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-      hints.set(DecodeHintType.TRY_HARDER, true);
-      reader.setHints(hints);
-
-      // Pass 1: HybridBinarizer
-      try {
-        const bitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
-        return reader.decode(bitmap).getText();
-      } catch {}
-
-      // Pass 2: GlobalHistogramBinarizer (handles camera shadows and glare)
-      try {
-        const bitmap = new BinaryBitmap(new GlobalHistogramBinarizer(luminanceSource));
-        return reader.decode(bitmap).getText();
-      } catch {}
-
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
   const handleImageCapture = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -89,19 +43,20 @@ export default function NovaScanner({ onVerified }) {
     setError('');
     setLoading(true);
     setProgress(15);
-    setStatusText('Loading photo into browser memory...');
+    setStatusText('Processing captured photo...');
 
     try {
       const imageBitmap = await createImageBitmap(file);
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
 
-      // Normalize dimensions (cap max dimension at 2000px for optimal matrix decoding density)
       let width = imageBitmap.width;
       let height = imageBitmap.height;
-      const maxDim = Math.max(width, height);
-      if (maxDim > 2000) {
-        const scale = 2000 / maxDim;
+
+      // Scale down massive camera photos for optimal matrix scanning
+      const maxDim = 1200;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
         width = Math.round(width * scale);
         height = Math.round(height * scale);
       }
@@ -110,35 +65,41 @@ export default function NovaScanner({ onVerified }) {
       canvas.height = height;
       ctx.drawImage(imageBitmap, 0, 0, width, height);
 
-      setStatusText('Scanning high-density QR matrix...');
+      const imgData = ctx.getImageData(0, 0, width, height);
+
+      setStatusText('Decoding high-density QR matrix...');
       setProgress(35);
 
-      // Pass A: Standard decode
-      let qrText = decodeCanvasBitmap(ctx, width, height);
+      // Attempt 1: Standard scan with inversion attempts
+      let code = jsQR(imgData.data, imgData.width, imgData.height, {
+        inversionAttempts: 'attemptBoth',
+      });
 
-      // Pass B: Quiet zone padding (if cropped tightly)
-      if (!qrText) {
-        setStatusText('Applying virtual border padding...');
-        const paddedCanvas = document.createElement('canvas');
-        paddedCanvas.width = width + 120;
-        paddedCanvas.height = height + 120;
-        const pCtx = paddedCanvas.getContext('2d');
-        pCtx.fillStyle = '#FFFFFF';
-        pCtx.fillRect(0, 0, paddedCanvas.width, paddedCanvas.height);
-        pCtx.drawImage(canvas, 60, 60);
-
-        qrText = decodeCanvasBitmap(pCtx, paddedCanvas.width, paddedCanvas.height);
+      // Attempt 2: If failed, try with high-contrast thresholding
+      if (!code) {
+        setStatusText('Optimizing image contrast...');
+        const data = imgData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+          const enhanced = avg < 140 ? 0 : 255;
+          data[i] = enhanced;
+          data[i + 1] = enhanced;
+          data[i + 2] = enhanced;
+        }
+        code = jsQR(data, imgData.width, imgData.height, {
+          inversionAttempts: 'attemptBoth',
+        });
       }
 
-      if (!qrText) {
+      if (!code || !code.data) {
         throw new Error('No QR code detected. Ensure all four corners of the QR code are fully visible.');
       }
 
       setStatusText('QR successfully decoded! Generating ZK proof...');
       setProgress(50);
 
-      // Hand off payload to Web Worker for client-side proving
-      workerRef.current.postMessage({ qrData: qrText });
+      // Hand off decoded payload to Web Worker for client-side proving
+      workerRef.current.postMessage({ qrData: code.data });
 
     } catch (err) {
       console.error(err);
@@ -159,7 +120,7 @@ export default function NovaScanner({ onVerified }) {
         </div>
       )}
 
-      {/* Hidden canvas used for pixel manipulation */}
+      {/* Hidden canvas used for pixel manipulation and decoding */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
       {/* Hidden native file input with environment camera capture hook */}
