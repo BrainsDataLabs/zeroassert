@@ -6,56 +6,79 @@ import NovaScanner from './nova-engine/NovaScanner';
 export default function AgeVerificationGateway() {
   const [mode, setMode] = useState<'ephemeral' | 'nova'>('ephemeral');
   const [loading, setLoading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
   const [verified, setVerified] = useState(false);
   const [error, setError] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
 
-  const handleEphemeralUpload = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = e.target.files?.[0];
+  const apiUrl = '/api/verify-ephemeral';
+
+  async function handleEphemeralUpload(
+    event: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const file = event.target.files?.[0];
 
     if (!file) return;
 
-    setError('');
-    setVerified(false);
     setLoading(true);
-    setStatusMessage('Uploading to RAM for ephemeral assertion...');
+    setVerified(false);
+    setError('');
+    setStatusMessage('Connecting to ZeroAssert verification API...');
 
     try {
+      if (!file.type.startsWith('image/')) {
+        throw new Error('Please select an image file.');
+      }
+
       const formData = new FormData();
-
       formData.append('file', file);
-      formData.append(
-        'checkout_id',
-        'chk_live_' + Math.random().toString(36).substring(2, 9)
-      );
-      formData.append(
-        'shop_domain',
-        'standalone-test.myshopify.com'
-      );
 
-      const res = await fetch('/api/verify-ephemeral', {
+      /*
+       * IMPORTANT:
+       * Do not manually set Content-Type here.
+       * The browser generates the multipart boundary.
+       */
+      const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+        },
       });
 
-      const contentType = res.headers.get('content-type') || '';
+      const contentType =
+        response.headers.get('content-type') || '';
 
-      if (!contentType.includes('application/json')) {
-        const text = await res.text();
+      const text = await response.text();
 
+      if (!response.ok) {
         throw new Error(
-          `Verification API returned non-JSON response (${res.status}). ` +
-            `Response: ${text.substring(0, 200)}`
+          `API returned HTTP ${response.status}. ` +
+          `${text.substring(0, 300)}`
         );
       }
 
-      const data = await res.json();
-
-      if (!res.ok || !data.success) {
+      if (!contentType.includes('application/json')) {
         throw new Error(
-          data.error || 'Verification rejected'
+          `API returned ${contentType || 'unknown content type'} instead of JSON. ` +
+          `Response: ${text.substring(0, 300)}`
+        );
+      }
+
+      let data: any;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `API returned invalid JSON: ${text.substring(0, 300)}`
+        );
+      }
+
+      if (!data.success) {
+        throw new Error(
+          data.error || 'Aadhaar verification failed.'
         );
       }
 
@@ -63,37 +86,43 @@ export default function AgeVerificationGateway() {
       setStatusMessage(
         'Age verified (18+). Checkout unlocked.'
       );
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : 'Verification failed';
+    } catch (error: unknown) {
+      console.error(
+        '[ZeroAssert] Verification request failed:',
+        error
+      );
 
-      setError(message);
+      if (
+        error instanceof TypeError &&
+        error.message === 'Failed to fetch'
+      ) {
+        setError(
+          'Cannot reach the ZeroAssert verification API. ' +
+          'The browser could not establish the connection to ' +
+          window.location.origin +
+          apiUrl +
+          '.'
+        );
+      } else {
+        setError(
+          error instanceof Error
+            ? error.message
+            : 'Verification failed.'
+        );
+      }
+
       setStatusMessage('');
     } finally {
       setLoading(false);
+      event.target.value = '';
     }
-  };
+  }
 
-  const handleNovaVerified = (proof: unknown) => {
-    console.log('Nova proof generated locally:', proof);
-
-    setVerified(true);
-    setError('');
-    setStatusMessage(
-      'Proof successfully verified client-side via Nova.'
-    );
-  };
-
-  const handleModeChange = (
-    nextMode: 'ephemeral' | 'nova'
-  ) => {
-    setMode(nextMode);
-    setError('');
+  function reset() {
     setVerified(false);
+    setError('');
     setStatusMessage('');
-  };
+  }
 
   return (
     <main
@@ -103,52 +132,52 @@ export default function AgeVerificationGateway() {
         alignItems: 'center',
         justifyContent: 'center',
         background: '#F9FAFB',
-        padding: '1.5rem',
+        padding: '24px',
       }}
     >
       <div
         style={{
           width: '100%',
-          maxWidth: '420px',
+          maxWidth: '440px',
           background: '#FFFFFF',
           borderRadius: '16px',
-          boxShadow: '0 10px 25px rgba(0,0,0,0.05)',
-          padding: '2rem',
+          padding: '32px',
+          boxShadow:
+            '0 10px 30px rgba(0,0,0,0.06)',
         }}
       >
         <h1
           style={{
-            fontSize: '1.4rem',
-            fontWeight: '700',
             textAlign: 'center',
-            marginBottom: '1.5rem',
-            color: '#111827',
+            fontSize: '24px',
+            fontWeight: 700,
+            marginBottom: '24px',
           }}
         >
           Age Verification Gateway
         </h1>
 
-        {/* Engine Toggle */}
         <div
           style={{
             display: 'flex',
+            gap: '4px',
             background: '#F3F4F6',
-            borderRadius: '8px',
             padding: '4px',
-            marginBottom: '1.5rem',
+            borderRadius: '8px',
+            marginBottom: '24px',
           }}
         >
           <button
             type="button"
-            onClick={() => handleModeChange('ephemeral')}
+            onClick={() => {
+              setMode('ephemeral');
+              reset();
+            }}
             style={{
               flex: 1,
-              padding: '0.6rem 0.5rem',
-              fontSize: '0.85rem',
-              fontWeight: '600',
+              padding: '10px',
+              border: 0,
               borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer',
               background:
                 mode === 'ephemeral'
                   ? '#2563EB'
@@ -157,23 +186,24 @@ export default function AgeVerificationGateway() {
                 mode === 'ephemeral'
                   ? '#FFFFFF'
                   : '#4B5563',
-              transition: 'all 0.2s',
+              fontWeight: 600,
+              cursor: 'pointer',
             }}
           >
-            Server Ephemeral Path
+            Server Ephemeral
           </button>
 
           <button
             type="button"
-            onClick={() => handleModeChange('nova')}
+            onClick={() => {
+              setMode('nova');
+              reset();
+            }}
             style={{
               flex: 1,
-              padding: '0.6rem 0.5rem',
-              fontSize: '0.85rem',
-              fontWeight: '600',
+              padding: '10px',
+              border: 0,
               borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer',
               background:
                 mode === 'nova'
                   ? '#2563EB'
@@ -182,89 +212,108 @@ export default function AgeVerificationGateway() {
                 mode === 'nova'
                   ? '#FFFFFF'
                   : '#4B5563',
-              transition: 'all 0.2s',
+              fontWeight: 600,
+              cursor: 'pointer',
             }}
           >
-            Client Nova ZKP 🛡️
+            Client Nova
           </button>
         </div>
 
-        {/* Successful verification */}
         {verified ? (
           <div
             style={{
-              padding: '1.5rem',
+              padding: '24px',
               background: '#ECFDF5',
-              border: '1px solid #A7F3D0',
+              border:
+                '1px solid #A7F3D0',
               borderRadius: '12px',
               textAlign: 'center',
             }}
           >
             <div
               style={{
-                fontSize: '2rem',
-                marginBottom: '0.5rem',
+                fontSize: '32px',
+                marginBottom: '8px',
               }}
             >
               ✅
             </div>
 
-            <h3
+            <h2
               style={{
-                fontSize: '1rem',
-                fontWeight: '700',
                 color: '#065F46',
-                marginBottom: '0.25rem',
+                fontSize: '18px',
               }}
             >
-              Age Verified (18+)
-            </h3>
+              Age Verified — 18+
+            </h2>
 
             <p
               style={{
-                fontSize: '0.85rem',
                 color: '#047857',
+                fontSize: '14px',
               }}
             >
               {statusMessage}
             </p>
+
+            <button
+              type="button"
+              onClick={reset}
+              style={{
+                marginTop: '12px',
+                padding: '10px 16px',
+                border: 0,
+                borderRadius: '8px',
+                background: '#065F46',
+                color: '#FFFFFF',
+                cursor: 'pointer',
+              }}
+            >
+              Verify another document
+            </button>
           </div>
-
         ) : mode === 'nova' ? (
-
-          /* Client-side Nova verifier */
           <NovaScanner
-            onVerified={handleNovaVerified}
+            onVerified={(proof: unknown) => {
+              console.log(
+                '[ZeroAssert] Nova proof:',
+                proof
+              );
+
+              setVerified(true);
+              setStatusMessage(
+                'Proof generated locally via Nova.'
+              );
+            }}
           />
-
         ) : (
-
-          /* Server ephemeral processing path */
           <div>
             <p
               style={{
-                fontSize: '0.875rem',
-                color: '#4B5563',
                 textAlign: 'center',
-                marginBottom: '1.5rem',
-                lineHeight: '1.4',
+                color: '#4B5563',
+                fontSize: '14px',
+                lineHeight: 1.5,
+                marginBottom: '20px',
               }}
             >
-              Upload an e-document or screenshot.
-              Demographics are evaluated strictly in
-              transient RAM and never stored.
+              Upload an Aadhaar QR image for
+              ephemeral verification.
             </p>
 
             {error && (
               <div
                 style={{
                   background: '#FEF2F2',
-                  border: '1px solid #FECACA',
+                  border:
+                    '1px solid #FECACA',
                   color: '#B91C1C',
-                  padding: '0.75rem',
                   borderRadius: '8px',
-                  fontSize: '0.825rem',
-                  marginBottom: '1.25rem',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  fontSize: '13px',
                   overflowWrap: 'break-word',
                 }}
               >
@@ -275,74 +324,90 @@ export default function AgeVerificationGateway() {
             <label
               style={{
                 display: 'block',
-                width: '100%',
-                padding: '1.5rem 1rem',
-                border: '2px dashed #D1D5DB',
+                padding: '24px',
+                border:
+                  '2px dashed #D1D5DB',
                 borderRadius: '12px',
                 textAlign: 'center',
                 cursor: loading
                   ? 'not-allowed'
                   : 'pointer',
-                background: '#F9FAFB',
-                boxSizing: 'border-box',
               }}
             >
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
-                onChange={handleEphemeralUpload}
+                onChange={
+                  handleEphemeralUpload
+                }
                 disabled={loading}
-                style={{ display: 'none' }}
+                style={{
+                  display: 'none',
+                }}
               />
 
-              <span
+              <div
                 style={{
-                  display: 'block',
-                  fontSize: '1.8rem',
-                  marginBottom: '0.5rem',
+                  fontSize: '32px',
+                  marginBottom: '8px',
                 }}
               >
                 📄
-              </span>
+              </div>
 
-              <span
+              <div
                 style={{
-                  display: 'block',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                  color: '#1F2937',
+                  fontWeight: 600,
+                  color: '#111827',
                 }}
               >
                 {loading
-                  ? 'Processing in memory...'
+                  ? 'Connecting...'
                   : 'Choose Aadhaar Image'}
-              </span>
+              </div>
 
-              <span
+              <div
                 style={{
-                  display: 'block',
-                  fontSize: '0.75rem',
+                  fontSize: '12px',
                   color: '#6B7280',
-                  marginTop: '0.25rem',
+                  marginTop: '5px',
                 }}
               >
                 PNG, JPG or WebP · Maximum 10 MB
-              </span>
+              </div>
             </label>
 
             {loading && (
               <div
                 style={{
-                  marginTop: '1rem',
+                  marginTop: '16px',
                   textAlign: 'center',
-                  fontSize: '0.85rem',
                   color: '#2563EB',
-                  fontWeight: '500',
+                  fontSize: '13px',
                 }}
               >
                 ⏳ {statusMessage}
               </div>
             )}
+
+            <div
+              style={{
+                marginTop: '20px',
+                padding: '10px',
+                background: '#F3F4F6',
+                borderRadius: '6px',
+                fontSize: '11px',
+                color: '#6B7280',
+                wordBreak: 'break-all',
+              }}
+            >
+              API:
+              <br />
+              {typeof window !== 'undefined'
+                ? window.location.origin
+                : ''}
+              {apiUrl}
+            </div>
           </div>
         )}
       </div>
