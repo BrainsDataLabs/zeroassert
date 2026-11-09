@@ -1,249 +1,243 @@
 "use client";
 
-import {
-  useCallback,
-  useState,
-} from "react";
-
+import { useCallback, useState } from "react";
 import NovaScanner from "./nova-engine/NovaScanner";
 
+type Mode = "ephemeral" | "nova";
+
 export default function AgeVerificationGateway() {
-  const [
-    mode,
-    setMode,
-  ] =
-    useState<
-      "ephemeral" | "nova"
-    >("ephemeral");
-
-  const [
-    loading,
-    setLoading,
-  ] =
-    useState(false);
-
-  const [
-    statusMessage,
-    setStatusMessage,
-  ] =
-    useState("");
-
-  const [
-    verified,
-    setVerified,
-  ] =
-    useState(false);
-
-  const [
-    error,
-    setError,
-  ] =
-    useState("");
-
-  const [
-    progress,
-    setProgress,
-  ] =
-    useState(0);
+  const [mode, setMode] = useState<Mode>("ephemeral");
+  const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [verified, setVerified] = useState(false);
+  const [error, setError] = useState("");
+  const [progress, setProgress] = useState(0);
 
   async function handleEphemeralUpload(
     e: React.ChangeEvent<HTMLInputElement>
   ) {
-    const file =
-      e.target.files?.[0];
+    const file = e.target.files?.[0];
 
-    if (!file)
-      return;
+    if (!file) return;
 
     setError("");
-    setVerified(
-      false
-    );
-    setLoading(
-      true
-    );
-    setProgress(
-      10
-    );
+    setVerified(false);
+    setLoading(true);
+    setProgress(5);
+    setStatusMessage("Preparing secure ephemeral session...");
 
     try {
-      setStatusMessage(
-        "Preparing secure ephemeral session..."
+      if (!file.type.startsWith("image/")) {
+        throw new Error("Please select a PNG, JPG or WebP image.");
+      }
+
+      if (file.size > 10 * 1024 * 1024) {
+        throw new Error("Image exceeds the 10 MB limit.");
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      setProgress(20);
+      setStatusMessage("Uploading document for temporary processing...");
+
+      /*
+       * IMPORTANT:
+       *
+       * Use the current ZeroAssert origin explicitly.
+       * This prevents accidental requests to another host when
+       * the application is deployed behind a custom domain.
+       *
+       * Production:
+       * https://zeroassert.brainsdata.org/api/verify-ephemeral
+       */
+      const apiUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/api/verify-ephemeral`
+          : "/api/verify-ephemeral";
+
+      console.log("[ZeroAssert] API URL:", apiUrl);
+
+      const response = await fetch(apiUrl, {
+        method: "POST",
+        body: formData,
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      setProgress(70);
+      setStatusMessage("Securely validating Aadhaar QR...");
+
+      /*
+       * DO NOT blindly call response.json().
+       *
+       * If Vercel/Next.js/custom-domain routing returns an HTML
+       * error page, response.json() produces:
+       *
+       * Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+       *
+       * Read the response as text first and then parse JSON.
+       */
+      const responseText = await response.text();
+
+      const contentType =
+        response.headers.get("content-type") || "";
+
+      console.log("[ZeroAssert] HTTP status:", response.status);
+      console.log(
+        "[ZeroAssert] Content-Type:",
+        contentType
       );
 
-      const formData =
-        new FormData();
+      if (!response.ok) {
+        let message = `Verification request failed (${response.status}).`;
 
-      formData.append(
-        "file",
-        file
-      );
+        if (contentType.includes("application/json")) {
+          try {
+            const errorData = JSON.parse(responseText);
 
-      setProgress(
-        25
-      );
-
-      setStatusMessage(
-        "Uploading document for temporary processing..."
-      );
-
-      const response =
-        await fetch(
-          "/api/verify-ephemeral",
-          {
-            method:
-              "POST",
-            body:
-              formData,
-            cache:
-              "no-store",
+            message =
+              errorData?.error ||
+              errorData?.message ||
+              message;
+          } catch {
+            // Keep the generic HTTP error.
           }
+        } else {
+          console.error(
+            "[ZeroAssert] Non-JSON server response:",
+            responseText.slice(0, 1000)
+          );
+
+          if (
+            responseText.includes("<!DOCTYPE") ||
+            responseText.includes("<html")
+          ) {
+            message =
+              `ZeroAssert API returned an HTML page instead of JSON (HTTP ${response.status}). ` +
+              `Check the deployment/routing of /api/verify-ephemeral.`;
+          }
+        }
+
+        throw new Error(message);
+      }
+
+      if (!contentType.includes("application/json")) {
+        console.error(
+          "[ZeroAssert] Expected JSON but received:",
+          responseText.slice(0, 1000)
         );
 
-      setProgress(
-        70
-      );
+        throw new Error(
+          "ZeroAssert API returned HTML instead of JSON. " +
+          "The API route is not being reached by the zeroassert.brainsdata.org deployment."
+        );
+      }
 
-     const contentType =
-  response.headers.get("content-type") || "";
+      let data: any;
 
-if (!contentType.includes("application/json")) {
-  const text = await response.text();
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error(
+          "[ZeroAssert] Invalid JSON returned by API:",
+          responseText.slice(0, 1000)
+        );
 
-  console.error(
-    "Expected JSON but received:",
-    text.slice(0, 500)
-  );
+        throw new Error(
+          "ZeroAssert API returned malformed JSON."
+        );
+      }
 
-  throw new Error(
-    `Verification API returned ${response.status} ${response.statusText} instead of JSON.`
-  );
-}
+      if (!data?.success) {
+        throw new Error(
+          data?.error ||
+            "Aadhaar verification failed."
+        );
+      }
 
-const data = await response.json();
-
-if (!response.ok || !data.success) {
-  throw new Error(
-    data.error || "Verification failed."
-  );
-} 
-
-      
-
-      setProgress(
-        100
-      );
-
-      setVerified(
-        true
-      );
-
+      setProgress(100);
+      setVerified(true);
       setStatusMessage(
         "Age verified. Checkout unlocked."
       );
+    } catch (err: any) {
+      console.error(
+        "[ZeroAssert] Verification error:",
+        err
+      );
 
-    } catch (
-      err: any
-    ) {
       setError(
         err?.message ||
           "Verification failed."
       );
 
-      setProgress(
-        0
-      );
-
+      setProgress(0);
+      setStatusMessage("");
     } finally {
-      setLoading(
-        false
-      );
-
-      e.target.value =
-        "";
+      setLoading(false);
+      e.target.value = "";
     }
   }
 
-  const handleNovaVerified =
-    useCallback(
-      (proof: any) => {
-        console.log(
-          "Nova proof received:",
-          proof
-        );
+  const handleNovaVerified = useCallback(
+    (proof: any) => {
+      console.log(
+        "Nova proof received:",
+        proof
+      );
 
-        setVerified(
-          true
-        );
+      setVerified(true);
 
-        setStatusMessage(
-          "Client-side proof generated and verified."
-        );
-      },
-      []
-    );
+      setStatusMessage(
+        "Client-side proof generated and verified."
+      );
+    },
+    []
+  );
 
   function reset() {
-    setVerified(
-      false
-    );
+    setVerified(false);
+    setError("");
+    setStatusMessage("");
+    setProgress(0);
+  }
 
-    setError(
-      ""
-    );
-
-    setStatusMessage(
-      ""
-    );
-
-    setProgress(
-      0
-    );
+  function switchMode(nextMode: Mode) {
+    setMode(nextMode);
+    reset();
   }
 
   return (
     <main
       style={{
-        minHeight:
-          "100vh",
-        display:
-          "flex",
-        alignItems:
-          "center",
-        justifyContent:
-          "center",
-        background:
-          "#F9FAFB",
-        padding:
-          "1.5rem",
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#F9FAFB",
+        padding: "1.5rem",
       }}
     >
       <div
         style={{
-          width:
-            "100%",
-          maxWidth:
-            "440px",
-          background:
-            "#FFFFFF",
-          borderRadius:
-            "16px",
+          width: "100%",
+          maxWidth: "440px",
+          background: "#FFFFFF",
+          borderRadius: "16px",
           boxShadow:
             "0 10px 30px rgba(0,0,0,0.06)",
-          padding:
-            "2rem",
+          padding: "2rem",
         }}
       >
         <h1
           style={{
-            fontSize:
-              "1.5rem",
-            fontWeight:
-              700,
-            textAlign:
-              "center",
-            marginBottom:
-              "1.5rem",
+            fontSize: "1.5rem",
+            fontWeight: 700,
+            textAlign: "center",
+            marginBottom: "1.5rem",
           }}
         >
           Age Verification Gateway
@@ -251,47 +245,31 @@ if (!response.ok || !data.success) {
 
         <div
           style={{
-            display:
-              "flex",
-            background:
-              "#F3F4F6",
-            borderRadius:
-              "10px",
-            padding:
-              "4px",
-            marginBottom:
-              "1.5rem",
+            display: "flex",
+            background: "#F3F4F6",
+            borderRadius: "10px",
+            padding: "4px",
+            marginBottom: "1.5rem",
           }}
         >
           <button
             type="button"
-            onClick={() => {
-              setMode(
-                "ephemeral"
-              );
-              reset();
-            }}
+            onClick={() =>
+              switchMode("ephemeral")
+            }
             style={{
-              flex:
-                1,
-              padding:
-                "0.7rem 0.5rem",
-              border:
-                0,
-              borderRadius:
-                "8px",
-              cursor:
-                "pointer",
-              fontWeight:
-                600,
+              flex: 1,
+              padding: "0.7rem 0.5rem",
+              border: 0,
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: 600,
               background:
-                mode ===
-                "ephemeral"
+                mode === "ephemeral"
                   ? "#2563EB"
                   : "transparent",
               color:
-                mode ===
-                "ephemeral"
+                mode === "ephemeral"
                   ? "#FFFFFF"
                   : "#4B5563",
             }}
@@ -301,33 +279,22 @@ if (!response.ok || !data.success) {
 
           <button
             type="button"
-            onClick={() => {
-              setMode(
-                "nova"
-              );
-              reset();
-            }}
+            onClick={() =>
+              switchMode("nova")
+            }
             style={{
-              flex:
-                1,
-              padding:
-                "0.7rem 0.5rem",
-              border:
-                0,
-              borderRadius:
-                "8px",
-              cursor:
-                "pointer",
-              fontWeight:
-                600,
+              flex: 1,
+              padding: "0.7rem 0.5rem",
+              border: 0,
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: 600,
               background:
-                mode ===
-                "nova"
+                mode === "nova"
                   ? "#2563EB"
                   : "transparent",
               color:
-                mode ===
-                "nova"
+                mode === "nova"
                   ? "#FFFFFF"
                   : "#4B5563",
             }}
@@ -339,22 +306,17 @@ if (!response.ok || !data.success) {
         {verified ? (
           <div
             style={{
-              padding:
-                "1.5rem",
-              background:
-                "#ECFDF5",
+              padding: "1.5rem",
+              background: "#ECFDF5",
               border:
                 "1px solid #A7F3D0",
-              borderRadius:
-                "12px",
-              textAlign:
-                "center",
+              borderRadius: "12px",
+              textAlign: "center",
             }}
           >
             <div
               style={{
-                fontSize:
-                  "2rem",
+                fontSize: "2rem",
               }}
             >
               ✅
@@ -362,8 +324,7 @@ if (!response.ok || !data.success) {
 
             <h3
               style={{
-                color:
-                  "#065F46",
+                color: "#065F46",
               }}
             >
               Age Verified — 18+
@@ -371,39 +332,29 @@ if (!response.ok || !data.success) {
 
             <p
               style={{
-                fontSize:
-                  "0.85rem",
-                color:
-                  "#047857",
+                fontSize: "0.85rem",
+                color: "#047857",
               }}
             >
               {statusMessage}
             </p>
 
             <button
-              onClick={
-                reset
-              }
+              type="button"
+              onClick={reset}
               style={{
-                marginTop:
-                  "1rem",
-                padding:
-                  "0.65rem 1rem",
-                border:
-                  0,
-                borderRadius:
-                  "8px",
-                background:
-                  "#065F46",
-                color:
-                  "#FFFFFF",
+                marginTop: "1rem",
+                padding: "0.65rem 1rem",
+                border: 0,
+                borderRadius: "8px",
+                background: "#065F46",
+                color: "#FFFFFF",
               }}
             >
               Verify another document
             </button>
           </div>
-        ) : mode ===
-          "nova" ? (
+        ) : mode === "nova" ? (
           <NovaScanner
             onVerified={
               handleNovaVerified
@@ -413,34 +364,28 @@ if (!response.ok || !data.success) {
           <div>
             <p
               style={{
-                fontSize:
-                  "0.875rem",
-                color:
-                  "#4B5563",
-                textAlign:
-                  "center",
-                lineHeight:
-                  1.5,
+                fontSize: "0.875rem",
+                color: "#4B5563",
+                textAlign: "center",
+                lineHeight: 1.5,
               }}
             >
-              Your Aadhaar image is processed temporarily for verification and is not returned to the merchant.
+              Your Aadhaar image is processed
+              temporarily for verification and
+              is not returned to the merchant.
             </p>
 
             {error && (
               <div
                 style={{
-                  background:
-                    "#FEF2F2",
+                  background: "#FEF2F2",
                   border:
                     "1px solid #FECACA",
-                  color:
-                    "#B91C1C",
-                  padding:
-                    "0.9rem",
-                  borderRadius:
-                    "8px",
-                  marginBottom:
-                    "1.25rem",
+                  color: "#B91C1C",
+                  padding: "0.9rem",
+                  borderRadius: "8px",
+                  marginBottom: "1.25rem",
+                  wordBreak: "break-word",
                 }}
               >
                 {error}
@@ -449,139 +394,11 @@ if (!response.ok || !data.success) {
 
             <label
               style={{
-                display:
-                  "block",
-                width:
-                  "100%",
-                padding:
-                  "1.6rem 1rem",
+                display: "block",
+                width: "100%",
+                padding: "1.6rem 1rem",
                 border:
                   "2px dashed #D1D5DB",
-                borderRadius:
-                  "12px",
-                textAlign:
-                  "center",
-                cursor:
-                  loading
-                    ? "not-allowed"
-                    : "pointer",
-                background:
-                  "#F9FAFB",
-                boxSizing:
-                  "border-box",
-              }}
-            >
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={
-                  handleEphemeralUpload
-                }
-                disabled={
-                  loading
-                }
-                style={{
-                  display:
-                    "none",
-                }}
-              />
-
-              <span
-                style={{
-                  display:
-                    "block",
-                  fontSize:
-                    "1.8rem",
-                }}
-              >
-                📄
-              </span>
-
-              <span
-                style={{
-                  display:
-                    "block",
-                  fontWeight:
-                    600,
-                }}
-              >
-                {loading
-                  ? "Processing securely..."
-                  : "Choose Aadhaar Image"}
-              </span>
-
-              <span
-                style={{
-                  display:
-                    "block",
-                  fontSize:
-                    "0.75rem",
-                  color:
-                    "#6B7280",
-                }}
-              >
-                PNG, JPG or WebP · Maximum 10 MB
-              </span>
-            </label>
-
-            {loading && (
-              <div
-                style={{
-                  marginTop:
-                    "1.25rem",
-                }}
-              >
-                <div
-                  style={{
-                    display:
-                      "flex",
-                    justifyContent:
-                      "space-between",
-                    fontSize:
-                      "0.8rem",
-                  }}
-                >
-                  <span>
-                    {statusMessage}
-                  </span>
-
-                  <span>
-                    {progress}%
-                  </span>
-                </div>
-
-                <div
-                  style={{
-                    width:
-                      "100%",
-                    height:
-                      "8px",
-                    background:
-                      "#E5E7EB",
-                    borderRadius:
-                      "999px",
-                    overflow:
-                      "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      width:
-                        `${progress}%`,
-                      height:
-                        "100%",
-                      background:
-                        "#2563EB",
-                      transition:
-                        "width 0.25s ease",
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </main>
-  );
-}
+                borderRadius: "12px",
+                textAlign: "center",
+                cursor
