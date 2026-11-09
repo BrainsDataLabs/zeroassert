@@ -30,7 +30,8 @@ function generateAttestationProof(checkoutId: string, shopDomain: string, signat
     .digest('hex');
 }
 
-function decodeWithZXing(imageBitmap: { width: number; height: number; data: Buffer }): string | null {
+// ZXing Reader with HybridBinarizer
+function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer }): string | null {
   try {
     const { width, height, data } = imageBitmap;
     const len = width * height;
@@ -106,24 +107,45 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 1. RESOLUTION NORMALIZATION
+      // 1. OPTIMIZE FOR HIGH-DENSITY MATRICES
+      // Cap at 2200px max dimension: prevents memory exhaustion while preserving 
+      // sufficient pixel density (~4-6px per module) on dense 177x177 QR codes.
       const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
-      if (maxDim > 1400) {
+      if (maxDim > 2200) {
         if (image.bitmap.width > image.bitmap.height) {
-          image.resize(1400, Jimp.AUTO);
+          image.resize(2200, Jimp.AUTO);
         } else {
-          image.resize(Jimp.AUTO, 1400);
+          image.resize(Jimp.AUTO, 2200);
         }
       }
 
-      // 2. SCAN MATRIX
-      let qrText: string | null = decodeWithZXing(image.bitmap);
+      // 2. MULTI-PASS CAMERA DECODING PIPELINE
+      let qrText: string | null = null;
 
+      // Pass A: Direct decode
+      qrText = decodeBitmap(image.bitmap);
+
+      // Pass B: Grayscale + Dynamic Contrast Normalization (compensates for room glare/shadows)
       if (!qrText) {
-        const enhanced = image.clone().greyscale().contrast(0.3);
-        qrText = decodeWithZXing(enhanced.bitmap);
+        const normalized = image.clone().greyscale().contrast(0.35).normalize();
+        qrText = decodeBitmap(normalized.bitmap);
       }
 
+      // Pass C: Rotational Sweep (fixes phone EXIF orientation mismatches: 90, 180, 270 deg)
+      if (!qrText) {
+        for (const angle of [90, 180, 270]) {
+          const rotated = image.clone().rotate(angle);
+          qrText = decodeBitmap(rotated.bitmap);
+          if (qrText) break;
+
+          // Try contrast normalization on rotated frames
+          const rotNorm = rotated.clone().greyscale().contrast(0.35).normalize();
+          qrText = decodeBitmap(rotNorm.bitmap);
+          if (qrText) break;
+        }
+      }
+
+      // Pass D: Fallback scanner with double-inversion check
       if (!qrText) {
         const jsQrResult = jsQR(
           new Uint8ClampedArray(image.bitmap.data),
@@ -141,13 +163,13 @@ export async function POST(req: NextRequest) {
           { 
             success: false, 
             age_verified: false, 
-            error: 'No QR code detected in image. Please upload a clear Aadhaar secure QR code.' 
+            error: 'No QR code detected. For camera photos, ensure good lighting and frame the QR code clearly.' 
           },
           { status: 400 }
         );
       }
 
-      // 3. PARSE DEMOGRAPHIC DATA & EXTRACT BIRTH YEAR
+      // 3. PARSE DEMOGRAPHICS & EXTRACT BIRTH YEAR
       let birthYear: number | null = null;
       const rawString = qrText.trim();
 
@@ -165,12 +187,10 @@ export async function POST(req: NextRequest) {
 
         if (cleanDigits.length > 300) {
           try {
-            // Convert Base-10 BigInt to raw byte stream
             let hex = BigInt(cleanDigits).toString(16);
             if (hex.length % 2 !== 0) hex = '0' + hex;
             const compressed = Buffer.from(hex, 'hex');
 
-            // Decompress via GZIP / Deflate
             let decompressed: Buffer | null = null;
             try {
               decompressed = zlib.gunzipSync(compressed);
@@ -181,13 +201,12 @@ export async function POST(req: NextRequest) {
                 try {
                   decompressed = zlib.inflateRawSync(compressed);
                 } catch (e) {
-                  console.error('All decompression strategies failed:', e);
+                  console.error('Decompression failure:', e);
                 }
               }
             }
 
             if (decompressed) {
-              // Extract fields delimited by 255 (0xFF)
               const fields: string[] = [];
               let start = 0;
               for (let i = 0; i < decompressed.length; i++) {
@@ -198,7 +217,6 @@ export async function POST(req: NextRequest) {
                 }
               }
 
-              // Field index 3 contains DOB (DD-MM-YYYY or DD/MM/YYYY)
               if (fields.length > 3) {
                 const dobField = fields[3];
                 const match = dobField.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
@@ -209,7 +227,6 @@ export async function POST(req: NextRequest) {
                 }
               }
 
-              // Fallback scan across all extracted text fields
               if (!birthYear) {
                 for (const field of fields) {
                   const m = field.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
