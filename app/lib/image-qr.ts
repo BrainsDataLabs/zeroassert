@@ -1,568 +1,336 @@
 import Jimp from "jimp";
 import jsQR from "jsqr";
-
 import {
-  MultiFormatReader,
-  BarcodeFormat,
-  DecodeHintType,
-  RGBLuminanceSource,
   BinaryBitmap,
   HybridBinarizer,
-  GlobalHistogramBinarizer,
+  MultiFormatReader,
+  RGBLuminanceSource,
+  DecodeHintType,
+  BarcodeFormat,
 } from "@zxing/library";
 
-export type QRDecodeResult = {
-  data: string;
-  width: number;
-  height: number;
-  method: string;
-};
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_DIMENSION = 2200;
+const MAX_PIXELS = 4_500_000;
 
-function normalizeQR(
-  data: string
-): string {
-  return data
-    .replace(/\s+/g, "")
-    .trim();
-}
+/**
+ * Aadhaar Secure QR data is normally represented as a long
+ * numeric payload. This filter prevents us from accepting
+ * arbitrary QR content as Aadhaar data.
+ *
+ * NOTE:
+ * This is only a cheap first-stage filter. The actual
+ * cryptographic verification happens later.
+ */
+function isPotentialAadhaarQR(data: string): boolean {
+  const value = data.trim();
 
-function isProbablyAadhaarSecureQR(
-  data: string
-): boolean {
-  const normalized =
-    normalizeQR(data);
-
-  return (
-    /^\d+$/.test(normalized) &&
-    normalized.length >= 300 &&
-    normalized.length <= 15000
-  );
-}
-
-function decodeZXing(
-  bitmap: {
-    width: number;
-    height: number;
-    data: Buffer;
+  if (!/^\d+$/.test(value)) {
+    return false;
   }
+
+  return value.length >= 300 && value.length <= 15000;
+}
+
+/**
+ * Attempt decoding with ZXing.
+ */
+function decodeWithZXing(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number
 ): string | null {
-  const {
-    width,
-    height,
-    data,
-  } = bitmap;
-
-  const pixelCount =
-    width * height;
-
-  if (
-    pixelCount <= 0 ||
-    pixelCount > 20_000_000
-  ) {
-    return null;
-  }
-
-  const luminances =
-    new Uint8ClampedArray(
-      pixelCount
-    );
-
-  for (
-    let i = 0;
-    i < pixelCount;
-    i++
-  ) {
-    const offset =
-      i * 4;
-
-    luminances[i] =
-      (
-        data[offset] * 77 +
-        data[offset + 1] * 150 +
-        data[offset + 2] * 29
-      ) >> 8;
-  }
-
-  const source =
-    new RGBLuminanceSource(
-      luminances,
+  try {
+    const luminanceSource = new RGBLuminanceSource(
+      rgba,
       width,
       height
     );
 
-  const reader =
-    new MultiFormatReader();
+    const bitmap = new BinaryBitmap(
+      new HybridBinarizer(luminanceSource)
+    );
 
-  const hints =
-    new Map();
+    const reader = new MultiFormatReader();
 
-  hints.set(
-    DecodeHintType.POSSIBLE_FORMATS,
-    [BarcodeFormat.QR_CODE]
-  );
+    const hints = new Map();
 
-  hints.set(
-    DecodeHintType.TRY_HARDER,
-    true
-  );
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.QR_CODE,
+    ]);
 
-  reader.setHints(
-    hints
-  );
+    hints.set(DecodeHintType.TRY_HARDER, false);
 
-  try {
-    const result =
-      reader.decode(
-        new BinaryBitmap(
-          new HybridBinarizer(
-            source
-          )
-        )
-      );
+    reader.setHints(hints);
 
-    return result.getText();
-  } catch {
-    // Try the alternate binarizer.
-  }
+    const result = reader.decode(bitmap);
 
-  try {
-    const result =
-      reader.decode(
-        new BinaryBitmap(
-          new GlobalHistogramBinarizer(
-            source
-          )
-        )
-      );
+    const text = result.getText();
 
-    return result.getText();
+    return isPotentialAadhaarQR(text)
+      ? text.trim()
+      : null;
   } catch {
     return null;
   }
 }
 
-function decodeJSQR(
-  bitmap: {
-    width: number;
-    height: number;
-    data: Buffer;
-  }
+/**
+ * Attempt decoding with jsQR.
+ */
+function decodeWithJsQR(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number
 ): string | null {
   try {
-    const result =
-      jsQR(
-        new Uint8ClampedArray(
-          bitmap.data
-        ),
-        bitmap.width,
-        bitmap.height,
-        {
-          inversionAttempts:
-            "attemptBoth",
-        }
-      );
+    const result = jsQR(rgba, width, height, {
+      inversionAttempts: "dontInvert",
+    });
 
-    return (
-      result?.data ||
-      null
-    );
+    if (!result?.data) {
+      return null;
+    }
+
+    const text = result.data.trim();
+
+    return isPotentialAadhaarQR(text)
+      ? text
+      : null;
   } catch {
     return null;
   }
 }
 
-async function tryBitmap(
-  bitmap: any,
-  method: string
-): Promise<QRDecodeResult | null> {
-  const zxing =
-    decodeZXing(
-      bitmap
-    );
-
-  if (
-    zxing &&
-    isProbablyAadhaarSecureQR(
-      zxing
-    )
-  ) {
-    return {
-      data:
-        normalizeQR(
-          zxing
-        ),
-      width:
-        bitmap.width,
-      height:
-        bitmap.height,
-      method:
-        `${method}:zxing`,
-    };
-  }
-
-  const jsqr =
-    decodeJSQR(
-      bitmap
-    );
-
-  if (
-    jsqr &&
-    isProbablyAadhaarSecureQR(
-      jsqr
-    )
-  ) {
-    return {
-      data:
-        normalizeQR(
-          jsqr
-        ),
-      width:
-        bitmap.width,
-      height:
-        bitmap.height,
-      method:
-        `${method}:jsqr`,
-    };
-  }
-
-  return null;
-}
-
-async function tryImage(
-  image: any,
-  prefix: string
-): Promise<QRDecodeResult | null> {
-  let result =
-    await tryBitmap(
-      image.bitmap,
-      `${prefix}:original`
-    );
-
-  if (result) {
-    return result;
-  }
-
-  /*
-   * These fallback transformations are
-   * deliberately done only after the
-   * original image fails.
-   */
-
-  const gray =
-    image
-      .clone()
-      .greyscale();
-
-  result =
-    await tryBitmap(
-      gray.bitmap,
-      `${prefix}:gray`
-    );
-
-  if (result) {
-    return result;
-  }
-
-  const enhanced =
-    image
-      .clone()
-      .greyscale()
-      .contrast(0.5)
-      .normalize();
-
-  result =
-    await tryBitmap(
-      enhanced.bitmap,
-      `${prefix}:enhanced`
-    );
-
-  if (result) {
-    return result;
-  }
-
-  const thresholded =
-    image
-      .clone()
-      .greyscale()
-      .threshold({
-        max: 160,
-      });
-
-  result =
-    await tryBitmap(
-      thresholded.bitmap,
-      `${prefix}:threshold`
-    );
-
-  if (result) {
-    return result;
-  }
-
-  return null;
-}
-
-function makePadded(
-  image: any,
-  pad = 120
-) {
-  const padded =
-    new Jimp(
-      image.bitmap.width +
-        pad * 2,
-      image.bitmap.height +
-        pad * 2,
-      0xffffffff
-    );
-
-  padded.composite(
-    image,
-    pad,
-    pad
+/**
+ * Try both QR engines against one image.
+ */
+function tryDecode(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number
+): string | null {
+  // ZXing first
+  const zxingResult = decodeWithZXing(
+    rgba,
+    width,
+    height
   );
 
-  return padded;
+  if (zxingResult) {
+    return zxingResult;
+  }
+
+  // jsQR fallback
+  return decodeWithJsQR(
+    rgba,
+    width,
+    height
+  );
 }
 
+/**
+ * Create a grayscale RGBA buffer.
+ */
+function grayscaleRGBA(
+  rgba: Uint8ClampedArray
+): Uint8ClampedArray {
+  const output = new Uint8ClampedArray(rgba.length);
+
+  for (let i = 0; i < rgba.length; i += 4) {
+    const r = rgba[i];
+    const g = rgba[i + 1];
+    const b = rgba[i + 2];
+
+    // Standard luminance approximation.
+    const gray =
+      Math.round(
+        0.299 * r +
+        0.587 * g +
+        0.114 * b
+      );
+
+    output[i] = gray;
+    output[i + 1] = gray;
+    output[i + 2] = gray;
+    output[i + 3] = rgba[i + 3];
+  }
+
+  return output;
+}
+
+/**
+ * Decode a Jimp image using a small, deterministic number
+ * of attempts.
+ */
+async function decodeJimpImage(
+  image: Jimp
+): Promise<string | null> {
+  const rgba = new Uint8ClampedArray(
+    image.bitmap.data
+  );
+
+  const width = image.bitmap.width;
+  const height = image.bitmap.height;
+
+  // Attempt 1: original image
+  let result = tryDecode(
+    rgba,
+    width,
+    height
+  );
+
+  if (result) {
+    return result;
+  }
+
+  // Attempt 2: grayscale
+  const gray = grayscaleRGBA(rgba);
+
+  result = tryDecode(
+    gray,
+    width,
+    height
+  );
+
+  if (result) {
+    return result;
+  }
+
+  return null;
+}
+
+/**
+ * Main QR decoder.
+ *
+ * Important performance rule:
+ * We deliberately do NOT scan dozens of tiles or rotations.
+ * A serverless function should fail fast on arbitrary images.
+ */
 export async function decodeAadhaarQR(
   imageBuffer: Buffer
-): Promise<QRDecodeResult | null> {
-  if (
-    !imageBuffer ||
-    imageBuffer.length === 0
-  ) {
+): Promise<string | null> {
+  if (!imageBuffer || imageBuffer.length === 0) {
     return null;
   }
 
-  /*
-   * Jimp is intentionally initialized
-   * inside the function so module loading
-   * problems are caught by the API route.
-   */
-  let original: any;
+  if (imageBuffer.length > MAX_FILE_BYTES) {
+    return null;
+  }
+
+  let image: Jimp;
 
   try {
-    original =
-      await Jimp.read(
-        imageBuffer
-      );
-  } catch (error: any) {
-    throw new Error(
-      `Image decoder could not read the uploaded image: ${
-        error?.message ||
-        "unknown Jimp error"
-      }`
+    image = await Jimp.read(imageBuffer);
+  } catch (error) {
+    console.error("Jimp image read failed:", error);
+    return null;
+  }
+
+  let width = image.bitmap.width;
+  let height = image.bitmap.height;
+
+  if (!width || !height) {
+    return null;
+  }
+
+  const pixelCount = width * height;
+
+  if (pixelCount > MAX_PIXELS) {
+    const scale = Math.sqrt(
+      MAX_PIXELS / pixelCount
+    );
+
+    width = Math.max(
+      1,
+      Math.floor(width * scale)
+    );
+
+    height = Math.max(
+      1,
+      Math.floor(height * scale)
+    );
+
+    image = image.clone().resize(
+      width,
+      height
     );
   }
 
-  const image =
-    original.clone();
-
-  const maxDim =
-    Math.max(
-      image.bitmap.width,
-      image.bitmap.height
+  // Hard dimension bound.
+  if (
+    image.bitmap.width > MAX_DIMENSION ||
+    image.bitmap.height > MAX_DIMENSION
+  ) {
+    const scale = Math.min(
+      MAX_DIMENSION / image.bitmap.width,
+      MAX_DIMENSION / image.bitmap.height
     );
 
-  /*
-   * Keep the image bounded so a huge
-   * camera image cannot create enormous
-   * intermediate buffers.
-   */
-  if (
-    maxDim > 3000
-  ) {
-    const scale =
-      3000 /
-      maxDim;
-
-    image.resize(
-      Math.max(
-        1,
-        Math.round(
-          image.bitmap.width *
-            scale
-        )
-      ),
-      Math.max(
-        1,
-        Math.round(
-          image.bitmap.height *
-            scale
-        )
+    const newWidth = Math.max(
+      1,
+      Math.floor(
+        image.bitmap.width * scale
       )
     );
+
+    const newHeight = Math.max(
+      1,
+      Math.floor(
+        image.bitmap.height * scale
+      )
+    );
+
+    image = image.clone().resize(
+      newWidth,
+      newHeight
+    );
   }
 
-  /*
-   * PASS 1
-   * Whole image.
-   */
-  let result =
-    await tryImage(
-      image,
-      "full"
-    );
+  // Main bounded decode.
+  let result = await decodeJimpImage(image);
 
   if (result) {
     return result;
   }
 
   /*
-   * PASS 2
+   * One controlled enlargement fallback.
    *
-   * Search a few likely QR regions.
-   *
-   * This is intentionally less aggressive
-   * than the original implementation to
-   * reduce serverless memory/CPU usage.
+   * This helps when the QR occupies a relatively small
+   * portion of the supplied image without introducing the
+   * huge tile/rotation search used previously.
    */
-  const fractions = [
-    0.55,
-    0.70,
-    0.85,
-  ];
+  const currentWidth =
+    image.bitmap.width;
 
-  for (
-    const fraction of
-      fractions
+  const currentHeight =
+    image.bitmap.height;
+
+  const enlargedWidth = Math.min(
+    MAX_DIMENSION,
+    currentWidth * 2
+  );
+
+  const enlargedHeight = Math.min(
+    MAX_DIMENSION,
+    currentHeight * 2
+  );
+
+  if (
+    enlargedWidth > currentWidth ||
+    enlargedHeight > currentHeight
   ) {
-    const tileW =
-      Math.floor(
-        image.bitmap.width *
-          fraction
+    const enlarged = image
+      .clone()
+      .resize(
+        enlargedWidth,
+        enlargedHeight
       );
 
-    const tileH =
-      Math.floor(
-        image.bitmap.height *
-          fraction
-      );
-
-    const xs = [
-      0,
-      Math.max(
-        0,
-        image.bitmap.width -
-          tileW
-      ),
-      Math.floor(
-        (
-          image.bitmap.width -
-            tileW
-        ) / 2
-      ),
-    ];
-
-    const ys = [
-      0,
-      Math.max(
-        0,
-        image.bitmap.height -
-          tileH
-      ),
-      Math.floor(
-        (
-          image.bitmap.height -
-            tileH
-        ) / 2
-      ),
-    ];
-
-    for (
-      const x of xs
-    ) {
-      for (
-        const y of ys
-      ) {
-        const tile =
-          image.clone();
-
-        tile.crop(
-          x,
-          y,
-          tileW,
-          tileH
-        );
-
-        result =
-          await tryImage(
-            tile,
-            `tile-${fraction}-${x}-${y}`
-          );
-
-        if (result) {
-          return result;
-        }
-
-        /*
-         * One enlargement fallback.
-         */
-        const enlarged =
-          tile
-            .clone()
-            .scale(
-              2,
-              Jimp.RESIZE_BICUBIC
-            );
-
-        result =
-          await tryImage(
-            enlarged,
-            `tile2x-${fraction}-${x}-${y}`
-          );
-
-        if (result) {
-          return result;
-        }
-      }
-    }
-  }
-
-  /*
-   * PASS 3
-   *
-   * Add a QR quiet zone.
-   */
-  const padded =
-    makePadded(
-      image,
-      120
+    result = await decodeJimpImage(
+      enlarged
     );
-
-  result =
-    await tryImage(
-      padded,
-      "padded"
-    );
-
-  if (result) {
-    return result;
-  }
-
-  /*
-   * PASS 4
-   *
-   * Rotation fallback.
-   */
-  for (
-    const angle of [
-      90,
-      180,
-      270,
-    ]
-  ) {
-    const rotated =
-      image
-        .clone()
-        .rotate(
-          angle
-        );
-
-    result =
-      await tryImage(
-        rotated,
-        `rotated-${angle}`
-      );
 
     if (result) {
       return result;
