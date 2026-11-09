@@ -31,7 +31,6 @@ function generateAttestationProof(checkoutId: string, shopDomain: string, signat
     .digest('hex');
 }
 
-// Multi-pass ZXing Reader (Hybrid + Global Histogram)
 function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer }): string | null {
   try {
     const { width, height, data } = imageBitmap;
@@ -51,13 +50,11 @@ function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer
     hints.set(DecodeHintType.TRY_HARDER, true);
     reader.setHints(hints);
 
-    // Pass 1: HybridBinarizer (standard)
     try {
       const bitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
       return reader.decode(bitmap).getText();
     } catch {}
 
-    // Pass 2: GlobalHistogramBinarizer (better for paper reflections and camera shadows)
     try {
       const bitmap = new BinaryBitmap(new GlobalHistogramBinarizer(luminanceSource));
       return reader.decode(bitmap).getText();
@@ -69,20 +66,11 @@ function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer
   }
 }
 
-// Robust decompressor across all compression schemes
 function tryDecompress(buf: Buffer): Buffer | null {
-  try {
-    return zlib.gunzipSync(buf);
-  } catch {}
-  try {
-    return zlib.unzipSync(buf);
-  } catch {}
-  try {
-    return zlib.inflateRawSync(buf);
-  } catch {}
-  try {
-    return zlib.inflateSync(buf);
-  } catch {}
+  try { return zlib.gunzipSync(buf); } catch {}
+  try { return zlib.unzipSync(buf); } catch {}
+  try { return zlib.inflateRawSync(buf); } catch {}
+  try { return zlib.inflateSync(buf); } catch {}
   return null;
 }
 
@@ -135,8 +123,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 1. DOWNSCALE ONLY EXCESSIVELY LARGE IMAGES
-      // Keep up to 2400px so high-density matrices maintain required module pixel counts
       const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
       if (maxDim > 2400) {
         if (image.bitmap.width > image.bitmap.height) {
@@ -146,16 +132,30 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // 2. SCANNING PIPELINE
+      // 1. ADVANCED SCANNING PIPELINE
       let qrText: string | null = decodeBitmap(image.bitmap);
 
-      // Contrast + Grayscale normalization pass for lighting gradients
+      // Pass B: Quiet Zone Padding (Restores missing white borders on tight crops)
+      let paddedImage: any;
+      if (!qrText) {
+        paddedImage = new Jimp(image.bitmap.width + 120, image.bitmap.height + 120, 0xFFFFFFFF);
+        paddedImage.composite(image, 60, 60);
+        qrText = decodeBitmap(paddedImage.bitmap);
+      }
+
+      // Pass C: Nearest-Neighbor Upscaling (Enlarges QR on full-page digital screenshots)
+      if (!qrText && paddedImage) {
+        const scaled = paddedImage.clone().scale(2, Jimp.RESIZE_NEAREST_NEIGHBOR);
+        qrText = decodeBitmap(scaled.bitmap);
+      }
+
+      // Pass D: Contrast + Grayscale normalization (For physical camera shadows)
       if (!qrText) {
         const enhanced = image.clone().greyscale().contrast(0.3).normalize();
         qrText = decodeBitmap(enhanced.bitmap);
       }
 
-      // Rotational sweep (addresses phone EXIF orientation flips)
+      // Pass E: Rotational sweep (For physical camera EXIF flips)
       if (!qrText) {
         for (const angle of [90, 180, 270]) {
           const rotated = image.clone().rotate(angle);
@@ -168,7 +168,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Fallback pass with jsQR
+      // Pass F: Fallback jsQR
       if (!qrText) {
         const jsQrResult = jsQR(
           new Uint8ClampedArray(image.bitmap.data),
@@ -186,17 +186,16 @@ export async function POST(req: NextRequest) {
           { 
             success: false, 
             age_verified: false, 
-            error: 'No QR code detected. Ensure the QR code is clearly framed and well-focused.' 
+            error: 'No QR code detected. Ensure the QR code is clearly framed with a white border.' 
           },
           { status: 400 }
         );
       }
 
-      // 3. MULTI-FORMAT DEMOGRAPHIC EXTRACTION
+      // 2. MULTI-FORMAT DEMOGRAPHIC EXTRACTION
       let birthYear: number | null = null;
       const rawString = qrText.trim();
 
-      // Check format A: Legacy XML
       const xmlDob = rawString.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
       const xmlYob = rawString.match(/yob="(\d{4})"/i);
 
@@ -205,10 +204,8 @@ export async function POST(req: NextRequest) {
       } else if (xmlYob) {
         birthYear = parseInt(xmlYob[1], 10);
       } else {
-        // Modern Secure QR: Support both Numeric BigInt and Raw Latin-1 Byte streams
         let decompressed: Buffer | null = null;
 
-        // Path 1: Numeric BigInt representation (e-Aadhaar format)
         const cleanDigits = rawString.replace(/[^0-9]/g, '');
         if (cleanDigits.length > 300) {
           try {
@@ -221,13 +218,11 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Path 2: Raw byte stream (Physical PVC card format)
         if (!decompressed) {
           const rawBytes = Buffer.from(rawString, 'latin1');
           decompressed = tryDecompress(rawBytes);
         }
 
-        // Path 3: Sliced search for GZIP magic bytes (0x1F, 0x8B) in the buffer
         if (!decompressed) {
           const rawBytes = Buffer.from(rawString, 'latin1');
           for (let i = 0; i < rawBytes.length - 1; i++) {
@@ -238,7 +233,6 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Parse demographic fields from decompressed buffer
         if (decompressed) {
           const fields: string[] = [];
           let start = 0;
@@ -288,7 +282,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 4. STATUTORY 18+ ASSERTION
+      // 3. STATUTORY 18+ ASSERTION
       const currentYear = new Date().getFullYear();
       const calculatedAge = currentYear - birthYear;
 
@@ -314,7 +308,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5. AUDIT LOGGING & SUPABASE REVENUE LOGIC
+    // 4. AUDIT LOGGING & SUPABASE LOGIC
     const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
