@@ -1,40 +1,157 @@
-// app/nova-engine/worker.js
-self.onmessage = async function (e) {
-  const { qrData } = e.data;
+self.onmessage =
+  async function (event) {
+    const {
+      qrData,
+    } = event.data;
 
-  try {
-    // Step 1: Payload parsing & chunking (10%)
-    self.postMessage({ progress: 10, status: 'Chunking compressed payload...' });
-    await new Promise((r) => setTimeout(r, 200));
+    try {
+      if (
+        typeof qrData !==
+        "string"
+      ) {
+        throw new Error(
+          "Invalid QR payload."
+        );
+      }
 
-    // Step 2: SHA-256 integrity hashing (30%)
-    self.postMessage({ progress: 30, status: 'Executing SHA-256 data commitment...' });
-    const encoder = new TextEncoder();
-    const dataBuffer = encoder.encode(qrData);
-    await crypto.subtle.digest('SHA-256', dataBuffer);
-    await new Promise((r) => setTimeout(r, 300));
+      /*
+       * IMPORTANT:
+       *
+       * This worker currently provides the
+       * execution/progress shell only.
+       *
+       * It does NOT claim to generate a
+       * cryptographically valid Nova proof.
+       *
+       * Replace the proof section with the
+       * actual Nova circuit/prover once your
+       * Nova Aadhaar implementation is ready.
+       */
 
-    // Step 3: RSA-2048 exponentiation verification steps (60%)
-    self.postMessage({ progress: 60, status: 'Validating 17 RSA-2048 signature layers...' });
-    for (let i = 1; i <= 5; i++) {
-      await new Promise((r) => setTimeout(r, 150));
-      self.postMessage({ progress: 60 + (i * 5), status: `Folding polynomial constraint layer ${i}/5...` });
+      self.postMessage({
+        progress:
+          10,
+        status:
+          "Parsing Aadhaar Secure QR payload...",
+      });
+
+      await tick();
+
+      const decimal =
+        qrData.trim();
+
+      if (
+        !/^\d+$/.test(
+          decimal
+        )
+      ) {
+        throw new Error(
+          "QR payload is not a valid Aadhaar Secure QR decimal payload."
+        );
+      }
+
+      self.postMessage({
+        progress:
+          25,
+        status:
+          "Preparing private witness data...",
+      });
+
+      await tick();
+
+      const digest =
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(
+            decimal
+          )
+        );
+
+      self.postMessage({
+        progress:
+          45,
+        status:
+          "Computing local integrity commitment...",
+      });
+
+      await tick();
+
+      const commitment =
+        toHex(
+          new Uint8Array(
+            digest
+          )
+        );
+
+      self.postMessage({
+        progress:
+          60,
+        status:
+          "Preparing Nova proving inputs...",
+      });
+
+      await tick();
+
+      /*
+       * TODO:
+       *
+       * actual Nova prover call goes here.
+       *
+       * Do NOT treat `commitment` as a ZK proof.
+       */
+
+      self.postMessage({
+        progress:
+          100,
+        status:
+          "Client processing complete. Nova prover integration required.",
+        success:
+          false,
+        error:
+          "Nova prover is not connected yet. The QR processing pipeline succeeded, but no cryptographic proof was generated.",
+        debugCommitment:
+          commitment,
+      });
+    } catch (
+      error
+    ) {
+      self.postMessage({
+        success:
+          false,
+        error:
+          error?.message ||
+          "Client worker failed.",
+      });
     }
+  };
 
-    // Step 4: Spartan / Nova polynomial compression (90%)
-    self.postMessage({ progress: 90, status: 'Generating Nova ZK succinct proof...' });
-    await new Promise((r) => setTimeout(r, 400));
+function tick() {
+  return new Promise(
+    (resolve) =>
+      setTimeout(
+        resolve,
+        10
+      )
+  );
+}
 
-    // Step 5: Finalization (100%)
-    const randomStr = Math.random().toString(36).substring(2);
-    self.postMessage({ 
-      progress: 100, 
-      status: 'Proof generated successfully', 
-      success: true,
-      proof: { nullifier: 'nova_proof_' + randomStr } 
-    });
-
-  } catch (err) {
-    self.postMessage({ success: false, error: err.message });
-  }
-};
+function toHex(
+  bytes
+) {
+  return Array
+    .from(
+      bytes
+    )
+    .map(
+      (b) =>
+        b
+          .toString(
+            16
+          )
+          .padStart(
+            2,
+            "0"
+          )
+    )
+    .join("");
+}
