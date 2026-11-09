@@ -81,10 +81,15 @@ export default function NovaScanner({ onVerified }) {
           }
         }
       );
-    } catch (err) {
-      setError('Camera access denied or device unavailable.');
+        } catch (err) {
+      if (window.location.protocol !== 'https:') {
+        setError('Security Error: Camera requires an HTTPS connection. Please ensure you are visiting via https://');
+      } else {
+        setError('Camera access denied. Please allow camera permissions in your browser settings.');
+      }
       setScanning(false);
     }
+    
   }, [devices]);
 
   const toggleCamera = () => {
