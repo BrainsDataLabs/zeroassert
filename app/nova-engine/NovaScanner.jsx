@@ -16,7 +16,6 @@ export default function NovaScanner({ onVerified }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
-    // Initialize Web Worker
     workerRef.current = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
     workerRef.current.onmessage = (event) => {
       const { progress, status, success, proof, error } = event.data;
@@ -43,53 +42,70 @@ export default function NovaScanner({ onVerified }) {
     setError('');
     setLoading(true);
     setProgress(15);
-    setStatusText('Processing selected image...');
+    setStatusText('Processing high-density matrix...');
 
     try {
       const imageBitmap = await createImageBitmap(file);
       const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
       let width = imageBitmap.width;
       let height = imageBitmap.height;
 
-      const maxDim = 1200;
+      // Preserve more pixels for dense matrices (bumped from 1200 to 2000)
+      const maxDim = 2000;
       if (width > maxDim || height > maxDim) {
         const scale = maxDim / Math.max(width, height);
         width = Math.round(width * scale);
         height = Math.round(height * scale);
       }
 
-      canvas.width = width;
-      canvas.height = height;
-      ctx.drawImage(imageBitmap, 0, 0, width, height);
+      // 1. ADD VIRTUAL QUIET ZONE
+      // Inject a 120px pure white border around the image so finder patterns don't touch the edge
+      const pad = 120;
+      canvas.width = width + (pad * 2);
+      canvas.height = height + (pad * 2);
 
-      const imgData = ctx.getImageData(0, 0, width, height);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(imageBitmap, pad, pad, width, height);
 
-      setStatusText('Scanning QR matrix...');
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      setStatusText('Scanning padded QR matrix...');
       setProgress(35);
 
+      // PASS 1: Standard read on padded, high-res image
       let code = jsQR(imgData.data, imgData.width, imgData.height, {
         inversionAttempts: 'attemptBoth',
       });
 
+      // PASS 2: Aggressive Binary Thresholding
+      // Fixes camera glare and shadows by forcing pixels to absolute black or white
       if (!code) {
-        setStatusText('Optimizing image contrast...');
-        const data = imgData.data;
-        for (let i = 0; i < data.length; i += 4) {
-          const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-          const enhanced = avg < 140 ? 0 : 255;
-          data[i] = enhanced;
-          data[i + 1] = enhanced;
-          data[i + 2] = enhanced;
+        setStatusText('Applying binary thresholding...');
+        setProgress(40);
+        
+        const thresholdData = new Uint8ClampedArray(imgData.data.length);
+        for (let i = 0; i < imgData.data.length; i += 4) {
+          // Standard grayscale luminance formula
+          const lum = (imgData.data[i] * 0.299) + (imgData.data[i + 1] * 0.587) + (imgData.data[i + 2] * 0.114);
+          // Hard threshold at 128
+          const val = lum < 128 ? 0 : 255;
+          
+          thresholdData[i] = val;     // R
+          thresholdData[i + 1] = val; // G
+          thresholdData[i + 2] = val; // B
+          thresholdData[i + 3] = 255; // Alpha
         }
-        code = jsQR(data, imgData.width, imgData.height, {
+        
+        code = jsQR(thresholdData, imgData.width, imgData.height, {
           inversionAttempts: 'attemptBoth',
         });
       }
 
       if (!code || !code.data) {
-        throw new Error('No QR code detected. Ensure all four corners are fully visible.');
+        throw new Error('No QR code detected. Ensure all four corners are visible and glare-free.');
       }
 
       setStatusText('QR decoded! Generating ZK proof...');
@@ -118,7 +134,6 @@ export default function NovaScanner({ onVerified }) {
 
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-      {/* Standard file picker */}
       <input 
         type="file" 
         accept="image/*" 
@@ -127,7 +142,6 @@ export default function NovaScanner({ onVerified }) {
         style={{ display: 'none' }}
       />
 
-      {/* Native camera snapper */}
       <input 
         type="file" 
         accept="image/*" 
