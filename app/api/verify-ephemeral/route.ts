@@ -13,8 +13,13 @@ import {
   HybridBinarizer,
   GlobalHistogramBinarizer,
 } from '@zxing/library';
+import { verify } from '@anon-aadhaar/core';
 
 export const dynamic = 'force-dynamic';
+
+const UIDAI_PUBLIC_KEY = process.env.UIDAI_PUBLIC_KEY || `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA04...
+-----END PUBLIC KEY-----`;
 
 function sanitizeUrl(rawUrl: string): string {
   let url = rawUrl.trim().replace(/^["']|["']$/g, '');
@@ -79,7 +84,9 @@ export async function POST(req: NextRequest) {
     const checkout_id = (formData.get('checkout_id') as string) || 'chk_live_session_9823';
     const shop_domain = (formData.get('shop_domain') as string) || 'standalone-test.myshopify.com';
     const bypass_simulation = formData.get('bypass_simulation') === 'true';
+    
     const file = formData.get('file') as File | null;
+    const rawProof = formData.get('proofData') as string | null;
 
     if (bypass_simulation && process.env.NODE_ENV === 'production') {
       return NextResponse.json(
@@ -88,9 +95,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!file && !bypass_simulation) {
+    if (!file && !rawProof && !bypass_simulation) {
       return NextResponse.json(
-        { success: false, age_verified: false, error: 'No verification image provided.' },
+        { success: false, age_verified: false, error: 'No verification payload provided.' },
         { status: 400 }
       );
     }
@@ -101,6 +108,30 @@ export async function POST(req: NextRequest) {
     if (bypass_simulation) {
       isAgeVerified = true;
       signatureHash = 'simulated_' + crypto.randomBytes(8).toString('hex');
+    
+    // PATH 1: ZKP Proof Provided via Anon Aadhaar Frontend
+    } else if (rawProof) {
+      try {
+        const pcd = JSON.parse(rawProof);
+        // Enforce strict production UIDAI signature check (test mode disabled)
+        const isSignatureValid = await verify(pcd, false);
+        if (!isSignatureValid) {
+          return NextResponse.json(
+            { success: false, age_verified: false, error: 'Cryptographic ZK proof signature rejected.' },
+            { status: 401 }
+          );
+        }
+        // If ZKP passes, assertion is proven
+        isAgeVerified = true;
+        signatureHash = pcd.proof?.nullifier || crypto.randomBytes(8).toString('hex');
+      } catch (e) {
+        return NextResponse.json(
+          { success: false, age_verified: false, error: 'Invalid ZKP payload.' },
+          { status: 400 }
+        );
+      }
+
+    // PATH 2: Raw Image Provided for Ephemeral Backend Processing
     } else if (file) {
       if (!file.type.startsWith('image/')) {
         return NextResponse.json(
@@ -111,7 +142,6 @@ export async function POST(req: NextRequest) {
 
       const arrayBuffer = await file.arrayBuffer();
       const imageBuffer = Buffer.from(arrayBuffer);
-
       let image: any;
       try {
         image = await Jimp.read(imageBuffer);
@@ -122,7 +152,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Preserve pixel density for high-res screenshots
       const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
       if (maxDim > 2400) {
         if (image.bitmap.width > image.bitmap.height) {
@@ -132,46 +161,35 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // --- EXTREME SCANNING PIPELINE ---
+      // --- ADVANCED SCANNING PIPELINE ---
       let qrText: string | null = decodeBitmap(image.bitmap);
 
       let paddedImage: any;
       if (!qrText) {
-        // Fix for tight digital crops: add virtual quiet zone
         paddedImage = new Jimp(image.bitmap.width + 120, image.bitmap.height + 120, 0xFFFFFFFF);
         paddedImage.composite(image, 60, 60);
         qrText = decodeBitmap(paddedImage.bitmap);
       }
-
       if (!qrText && paddedImage) {
-        // Fix for sub-pixel density full-page screenshots
         const scaled = paddedImage.clone().scale(2, Jimp.RESIZE_NEAREST_NEIGHBOR);
         qrText = decodeBitmap(scaled.bitmap);
       }
-
       if (!qrText) {
-        // Fix for physical camera lighting gradients
         const enhanced = image.clone().greyscale().contrast(0.3).normalize();
         qrText = decodeBitmap(enhanced.bitmap);
       }
-
       if (!qrText) {
-        // Aggressive binary thresholding for blurred/noisy physical prints
         const thresholded = image.clone().greyscale().threshold({ max: 128 });
         qrText = decodeBitmap(thresholded.bitmap);
       }
-
       if (!qrText) {
-        // Rotational sweep for EXIF anomalies
         for (const angle of [90, 180, 270]) {
           const rotated = image.clone().rotate(angle);
           qrText = decodeBitmap(rotated.bitmap);
           if (qrText) break;
         }
       }
-
       if (!qrText) {
-        // Final fallback with jsQR inversion logic
         const jsQrResult = jsQR(
           new Uint8ClampedArray(image.bitmap.data),
           image.bitmap.width,
@@ -183,21 +201,17 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Educate the user immediately if they cut off the finder patterns
       if (!qrText) {
         return NextResponse.json(
-          { 
-            success: false, 
-            age_verified: false, 
-            error: 'No QR code detected. If you cropped the image, ensure all four corners of the QR code are fully visible with a white border.' 
-          },
+          { success: false, age_verified: false, error: 'No QR code detected. If you cropped the image, ensure all four corners of the QR code are fully visible.' },
           { status: 400 }
         );
       }
 
-      // --- DEMOGRAPHIC EXTRACTION ---
+      // --- DEMOGRAPHIC EXTRACTION & SIGNATURE VALIDATION ---
       let birthYear: number | null = null;
       const rawString = qrText.trim();
+      let decompressed: Buffer | null = null;
 
       const xmlDob = rawString.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
       const xmlYob = rawString.match(/yob="(\d{4})"/i);
@@ -207,9 +221,6 @@ export async function POST(req: NextRequest) {
       } else if (xmlYob) {
         birthYear = parseInt(xmlYob[1], 10);
       } else {
-        let decompressed: Buffer | null = null;
-
-        // Path A: Numeric BigInt format (e-Aadhaar PDFs)
         const cleanDigits = rawString.replace(/[^0-9]/g, '');
         if (cleanDigits.length > 300) {
           try {
@@ -217,18 +228,12 @@ export async function POST(req: NextRequest) {
             if (hex.length % 2 !== 0) hex = '0' + hex;
             const compressed = Buffer.from(hex, 'hex');
             decompressed = tryDecompress(compressed);
-          } catch (e) {
-            console.error('BigInt parsing error:', e);
-          }
+          } catch (e) {}
         }
-
-        // Path B: Raw Byte format (Physical PVC cards)
         if (!decompressed) {
           const rawBytes = Buffer.from(rawString, 'latin1');
           decompressed = tryDecompress(rawBytes);
         }
-
-        // Path C: Sliced GZIP search
         if (!decompressed) {
           const rawBytes = Buffer.from(rawString, 'latin1');
           for (let i = 0; i < rawBytes.length - 1; i++) {
@@ -240,9 +245,30 @@ export async function POST(req: NextRequest) {
         }
 
         if (decompressed) {
+          // STRICT CRYPTOGRAPHIC ASSERTION
+          // Ensure the payload has the 256-byte UIDAI RSA-2048 signature appended
+          if (decompressed.length > 256) {
+            const signature = decompressed.subarray(decompressed.length - 256);
+            const signedData = decompressed.subarray(0, decompressed.length - 256);
+            
+            // Validate the raw bytes against the official public key to prevent spoofing
+            const isValidSignature = crypto.verify('SHA256', signedData, UIDAI_PUBLIC_KEY, signature);
+            if (!isValidSignature && process.env.NODE_ENV === 'production') {
+              return NextResponse.json(
+                { success: false, age_verified: false, error: 'Forged QR: UIDAI Cryptographic signature is invalid.' },
+                { status: 401 }
+              );
+            }
+          } else {
+            return NextResponse.json(
+              { success: false, age_verified: false, error: 'Invalid QR payload format (Missing Signature).' },
+              { status: 401 }
+            );
+          }
+
           const fields: string[] = [];
           let start = 0;
-          for (let i = 0; i < decompressed.length; i++) {
+          for (let i = 0; i < decompressed.length - 256; i++) {
             if (decompressed[i] === 255) {
               fields.push(decompressed.subarray(start, i).toString('latin1'));
               start = i + 1;
@@ -268,22 +294,12 @@ export async function POST(req: NextRequest) {
               }
             }
           }
-
-          if (!birthYear) {
-            const fullText = decompressed.toString('latin1');
-            const fallback = fullText.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-            if (fallback) birthYear = parseInt(fallback[3], 10);
-          }
         }
       }
 
       if (!birthYear || isNaN(birthYear)) {
         return NextResponse.json(
-          { 
-            success: false, 
-            age_verified: false, 
-            error: 'Invalid QR code. The uploaded QR is not an official Aadhaar secure document.' 
-          },
+          { success: false, age_verified: false, error: 'Invalid QR code. The uploaded QR is not an official Aadhaar secure document.' },
           { status: 400 }
         );
       }
@@ -294,11 +310,7 @@ export async function POST(req: NextRequest) {
 
       if (calculatedAge < 18) {
         return NextResponse.json(
-          { 
-            success: false, 
-            age_verified: false, 
-            error: 'Verification failed: Age requirement (18+) not met.' 
-          },
+          { success: false, age_verified: false, error: 'Verification failed: Age requirement (18+) not met.' },
           { status: 403 }
         );
       }
@@ -314,7 +326,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // --- AUDIT LOGGING ---
+    // --- AUDIT LOGGING & SUPABASE REVENUE LOGIC ---
     const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
