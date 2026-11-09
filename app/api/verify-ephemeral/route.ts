@@ -20,17 +20,39 @@ export const dynamic =
 export const runtime =
   "nodejs";
 
+export const revalidate = 0;
+
+function jsonResponse(
+  body: Record<string, any>,
+  status = 200
+) {
+  return NextResponse.json(
+    body,
+    {
+      status,
+      headers: {
+        "Content-Type":
+          "application/json; charset=utf-8",
+
+        "Cache-Control":
+          "no-store, no-cache, must-revalidate, max-age=0",
+
+        Pragma: "no-cache",
+
+        Expires: "0",
+      },
+    }
+  );
+}
+
 function verifyUIDAISignature(
   signedData: Buffer,
   signature: Buffer
 ): boolean {
   const publicKey =
-    process.env
-      .UIDAI_PUBLIC_KEY;
+    process.env.UIDAI_PUBLIC_KEY;
 
-  if (
-    !publicKey
-  ) {
+  if (!publicKey) {
     throw new Error(
       "UIDAI_PUBLIC_KEY is not configured."
     );
@@ -40,8 +62,7 @@ function verifyUIDAISignature(
     "sha256",
     signedData,
     {
-      key:
-        publicKey,
+      key: publicKey,
       padding:
         crypto.constants
           .RSA_PKCS1_PADDING,
@@ -52,23 +73,47 @@ function verifyUIDAISignature(
 
 function cleanupBuffers(
   ...buffers: Array<
-    Buffer |
-      undefined |
-      null
+    Buffer | undefined | null
   >
 ) {
-  for (
-    const buffer of
-      buffers
-  ) {
-    if (
-      buffer
-    ) {
-      buffer.fill(
-        0
-      );
+  for (const buffer of buffers) {
+    if (buffer) {
+      try {
+        buffer.fill(0);
+      } catch {
+        // Best-effort memory cleanup.
+      }
     }
   }
+}
+
+export async function GET() {
+  /*
+   * This endpoint is intentionally useful for
+   * diagnosing deployment/routing problems.
+   *
+   * If:
+   *
+   * https://zeroassert.brainsdata.org/api/verify-ephemeral
+   *
+   * returns the ZeroAssert HTML page instead
+   * of this JSON response, the custom-domain
+   * deployment is not routing /api correctly.
+   */
+  return jsonResponse(
+    {
+      success: true,
+      service:
+        "ZeroAssert ephemeral verification API",
+      route:
+        "/api/verify-ephemeral",
+      method:
+        "POST",
+      status:
+        "ready",
+    },
+    200
+  );
 }
 
 export async function POST(
@@ -76,45 +121,53 @@ export async function POST(
 ) {
   let imageBuffer:
     | Buffer
-    | null =
-    null;
+    | null = null;
 
   let signedData:
     | Buffer
-    | null =
-    null;
+    | null = null;
 
   let signature:
     | Buffer
-    | null =
-    null;
+    | null = null;
 
   try {
+    const contentType =
+      req.headers.get(
+        "content-type"
+      ) || "";
+
+    if (
+      !contentType.includes(
+        "multipart/form-data"
+      )
+    ) {
+      return jsonResponse(
+        {
+          success: false,
+          age_verified: false,
+          error:
+            "Request must use multipart/form-data.",
+        },
+        400
+      );
+    }
+
     const formData =
       await req.formData();
 
     const file =
-      formData.get(
-        "file"
-      ) as File |
-        null;
+      formData.get("file");
 
-    if (
-      !file
-    ) {
-      return NextResponse.json(
+    if (!(file instanceof File)) {
+      return jsonResponse(
         {
-          success:
-            false,
-          age_verified:
-            false,
+          success: false,
+          age_verified: false,
           error:
             "No image supplied.",
         },
-        {
-          status:
-            400,
-        }
+        400
       );
     }
 
@@ -124,19 +177,14 @@ export async function POST(
         "image/"
       )
     ) {
-      return NextResponse.json(
+      return jsonResponse(
         {
-          success:
-            false,
-          age_verified:
-            false,
+          success: false,
+          age_verified: false,
           error:
             "Uploaded file is not an image.",
         },
-        {
-          status:
-            400,
-        }
+        400
       );
     }
 
@@ -146,19 +194,14 @@ export async function POST(
         1024 *
         1024
     ) {
-      return NextResponse.json(
+      return jsonResponse(
         {
-          success:
-            false,
-          age_verified:
-            false,
+          success: false,
+          age_verified: false,
           error:
             "Image exceeds the 10 MB limit.",
         },
-        {
-          status:
-            413,
-        }
+        413
       );
     }
 
@@ -170,34 +213,27 @@ export async function POST(
     /*
      * STEP 1
      *
-     * Locate Aadhaar Secure QR using:
-     * - ZXing
-     * - jsQR
-     * - preprocessing
-     * - tiled search
-     * - upscaling
+     * Detect the Aadhaar Secure QR.
+     *
+     * The image remains in server memory
+     * for the duration of this request.
+     *
+     * It is not written to disk.
      */
     const qr =
       await decodeAadhaarQR(
         imageBuffer
       );
 
-    if (
-      !qr
-    ) {
-      return NextResponse.json(
+    if (!qr) {
+      return jsonResponse(
         {
-          success:
-            false,
-          age_verified:
-            false,
+          success: false,
+          age_verified: false,
           error:
             "Aadhaar Secure QR could not be detected. Make sure the complete large QR and all four finder corners are visible.",
         },
-        {
-          status:
-            400,
-        }
+        400
       );
     }
 
@@ -232,22 +268,15 @@ export async function POST(
         signature
       );
 
-    if (
-      !signatureValid
-    ) {
-      return NextResponse.json(
+    if (!signatureValid) {
+      return jsonResponse(
         {
-          success:
-            false,
-          age_verified:
-            false,
+          success: false,
+          age_verified: false,
           error:
             "Aadhaar Secure QR signature verification failed.",
         },
-        {
-          status:
-            401,
-        }
+        401
       );
     }
 
@@ -261,30 +290,22 @@ export async function POST(
         parsed.birthYear
       );
 
-    if (
-      !ageVerified
-    ) {
-      return NextResponse.json(
+    if (!ageVerified) {
+      return jsonResponse(
         {
-          success:
-            false,
-          age_verified:
-            false,
+          success: false,
+          age_verified: false,
           error:
             "Age requirement of 18 years was not met.",
         },
-        {
-          status:
-            403,
-        }
+        403
       );
     }
 
     /*
      * STEP 5
      *
-     * Return only an opaque verification
-     * token to the client.
+     * Return ONLY an opaque verification token.
      *
      * Never return:
      * - Aadhaar number
@@ -307,12 +328,10 @@ export async function POST(
           "hex"
         );
 
-    return NextResponse.json(
+    return jsonResponse(
       {
-        success:
-          true,
-        age_verified:
-          true,
+        success: true,
+        age_verified: true,
         proof_token:
           proofToken,
         qr_decoder:
@@ -320,49 +339,29 @@ export async function POST(
         message:
           "Age verified successfully.",
       },
-      {
-        status:
-          200,
-        headers:
-          {
-            "Cache-Control":
-              "no-store, max-age=0",
-            Pragma:
-              "no-cache",
-          },
-      }
+      200
     );
-
-  } catch (
-    error: any
-  ) {
+  } catch (error: any) {
     console.error(
       "[ZeroAssert] ephemeral verification failed:",
-      error?.message
+      error
     );
 
-    return NextResponse.json(
+    return jsonResponse(
       {
-        success:
-          false,
-        age_verified:
-          false,
+        success: false,
+        age_verified: false,
         error:
           error?.message ||
           "Ephemeral verification failed.",
       },
-      {
-        status:
-          500,
-        headers:
-          {
-            "Cache-Control":
-              "no-store, max-age=0",
-          },
-      }
+      500
     );
-
   } finally {
+    /*
+     * Best-effort clearing of sensitive
+     * buffers before the request finishes.
+     */
     cleanupBuffers(
       imageBuffer,
       signedData,
