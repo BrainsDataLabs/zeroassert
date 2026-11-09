@@ -1,5 +1,6 @@
 import Jimp from "jimp";
 import jsQR from "jsqr";
+
 import {
   MultiFormatReader,
   BarcodeFormat,
@@ -17,37 +18,32 @@ export type QRDecodeResult = {
   method: string;
 };
 
-function isProbablyAadhaarSecureQR(data: string): boolean {
-  const s = data.trim();
+function normalizeQR(
+  data: string
+) {
+  return data
+    .replace(
+      /\s+/g,
+      ""
+    )
+    .trim();
+}
+
+function isProbablyAadhaarSecureQR(
+  data: string
+): boolean {
+  const s =
+    normalizeQR(
+      data
+    );
 
   return (
-    /^\d+$/.test(s) &&
+    /^\d+$/.test(
+      s
+    ) &&
     s.length >= 300 &&
     s.length <= 15000
   );
-}
-
-function rgbaToLuminance(
-  bitmap: {
-    width: number;
-    height: number;
-    data: Buffer;
-  }
-): Uint8ClampedArray {
-  const { width, height, data } = bitmap;
-
-  const out = new Uint8ClampedArray(width * height);
-
-  for (let i = 0; i < out.length; i++) {
-    const o = i * 4;
-
-    out[i] =
-      ((data[o] * 77 +
-        data[o + 1] * 150 +
-        data[o + 2] * 29) >> 8);
-  }
-
-  return out;
 }
 
 function decodeZXing(
@@ -57,55 +53,97 @@ function decodeZXing(
     data: Buffer;
   }
 ): string | null {
-  try {
-    const luminances = rgbaToLuminance(bitmap);
+  const {
+    width,
+    height,
+    data,
+  } = bitmap;
 
-    const source = new RGBLuminanceSource(
-      luminances,
-      bitmap.width,
-      bitmap.height
+  const len =
+    width *
+    height;
+
+  const luminances =
+    new Uint8ClampedArray(
+      len
     );
 
-    const reader = new MultiFormatReader();
+  for (
+    let i = 0;
+    i < len;
+    i++
+  ) {
+    const o =
+      i * 4;
 
-    const hints = new Map();
-
-    hints.set(
-      DecodeHintType.POSSIBLE_FORMATS,
-      [BarcodeFormat.QR_CODE]
-    );
-
-    hints.set(
-      DecodeHintType.TRY_HARDER,
-      true
-    );
-
-    reader.setHints(hints);
-
-    try {
-      const binary = new BinaryBitmap(
-        new HybridBinarizer(source)
-      );
-
-      const result = reader.decode(binary);
-
-      return result.getText();
-    } catch {}
-
-    try {
-      const binary = new BinaryBitmap(
-        new GlobalHistogramBinarizer(source)
-      );
-
-      const result = reader.decode(binary);
-
-      return result.getText();
-    } catch {}
-
-    return null;
-  } catch {
-    return null;
+    luminances[
+      i
+    ] =
+      ((
+        data[o] *
+          77 +
+        data[o + 1] *
+          150 +
+        data[o + 2] *
+          29
+      ) >>
+        8);
   }
+
+  const source =
+    new RGBLuminanceSource(
+      luminances,
+      width,
+      height
+    );
+
+  const reader =
+    new MultiFormatReader();
+
+  const hints =
+    new Map();
+
+  hints.set(
+    DecodeHintType.POSSIBLE_FORMATS,
+    [
+      BarcodeFormat.QR_CODE,
+    ]
+  );
+
+  hints.set(
+    DecodeHintType.TRY_HARDER,
+    true
+  );
+
+  reader.setHints(
+    hints
+  );
+
+  try {
+    return reader
+      .decode(
+        new BinaryBitmap(
+          new HybridBinarizer(
+            source
+          )
+        )
+      )
+      .getText();
+  } catch {}
+
+  try {
+    return reader
+      .decode(
+        new BinaryBitmap(
+          new GlobalHistogramBinarizer(
+            source
+          )
+        )
+      )
+      .getText();
+  } catch {}
+
+  return null;
 }
 
 function decodeJSQR(
@@ -116,332 +154,374 @@ function decodeJSQR(
   }
 ): string | null {
   try {
-    const result = jsQR(
-      new Uint8ClampedArray(bitmap),
-      bitmap.width,
-      bitmap.height,
-      {
-        inversionAttempts: "attemptBoth",
-      }
-    );
+    const result =
+      jsQR(
+        new Uint8ClampedArray(
+          bitmap.data
+        ),
+        bitmap.width,
+        bitmap.height,
+        {
+          inversionAttempts:
+            "attemptBoth",
+        }
+      );
 
-    return result?.data ?? null;
+    return (
+      result?.data ??
+      null
+    );
   } catch {
     return null;
   }
 }
 
-function decodeBitmap(
-  bitmap: {
-    width: number;
-    height: number;
-    data: Buffer;
-  }
-): string | null {
+function makePadded(
+  image: any,
+  pad = 120
+) {
+  const padded =
+    new Jimp(
+      image.bitmap.width +
+        pad * 2,
+      image.bitmap.height +
+        pad * 2,
+      0xffffffff
+    );
 
-  const zxingResult = decodeZXing(bitmap);
+  padded.composite(
+    image,
+    pad,
+    pad
+  );
+
+  return padded;
+}
+
+async function tryBitmap(
+  bitmap: any,
+  method: string
+) {
+  const zxing =
+    decodeZXing(
+      bitmap
+    );
 
   if (
-    zxingResult &&
-    isProbablyAadhaarSecureQR(zxingResult)
+    zxing &&
+    isProbablyAadhaarSecureQR(
+      zxing
+    )
   ) {
-    return zxingResult.trim();
+    return {
+      data:
+        normalizeQR(
+          zxing
+        ),
+      width:
+        bitmap.width,
+      height:
+        bitmap.height,
+      method:
+        `${method}:zxing`,
+    };
   }
 
-  const jsqrResult = decodeJSQR(bitmap);
+  const jsqr =
+    decodeJSQR(
+      bitmap
+    );
 
   if (
-    jsqrResult &&
-    isProbablyAadhaarSecureQR(jsqrResult)
+    jsqr &&
+    isProbablyAadhaarSecureQR(
+      jsqr
+    )
   ) {
-    return jsqrResult.trim();
+    return {
+      data:
+        normalizeQR(
+          jsqr
+        ),
+      width:
+        bitmap.width,
+      height:
+        bitmap.height,
+      method:
+        `${method}:jsqr`,
+    };
   }
 
   return null;
 }
 
-async function tryVariants(
+async function tryImage(
   image: any,
-  label: string
-): Promise<QRDecodeResult | null> {
+  prefix: string
+) {
+  let result =
+    await tryBitmap(
+      image.bitmap,
+      `${prefix}:original`
+    );
 
-  const variants: Array<{
-    image: any;
-    label: string;
-  }> = [];
+  if (result)
+    return result;
 
-  variants.push({
-    image,
-    label: `${label}:original`,
-  });
+  const gray =
+    image
+      .clone()
+      .greyscale();
 
-  variants.push({
-    image: image.clone().greyscale(),
-    label: `${label}:gray`,
-  });
+  result =
+    await tryBitmap(
+      gray.bitmap,
+      `${prefix}:gray`
+    );
 
-  variants.push({
-    image: image
+  if (result)
+    return result;
+
+  const enhanced =
+    image
       .clone()
       .greyscale()
-      .contrast(0.35)
-      .normalize(),
-    label: `${label}:contrast`,
-  });
+      .contrast(
+        0.5
+      )
+      .normalize();
 
-  for (const threshold of [100, 128, 150, 180]) {
-    variants.push({
-      image: image
-        .clone()
-        .greyscale()
-        .threshold({
-          max: threshold,
-        }),
-      label: `${label}:threshold-${threshold}`,
-    });
-  }
-
-  // Upscaling is particularly useful for photographs
-  // where the dense QR occupies relatively few pixels.
-  variants.push({
-    image: image
-      .clone()
-      .scale(2, Jimp.RESIZE_BICUBIC),
-    label: `${label}:2x`,
-  });
-
-  for (const variant of variants) {
-
-    const result = decodeBitmap(
-      variant.image.bitmap
+  result =
+    await tryBitmap(
+      enhanced.bitmap,
+      `${prefix}:enhanced`
     );
 
-    if (result) {
-      return {
-        data: result,
-        width: variant.image.bitmap.width,
-        height: variant.image.bitmap.height,
-        method: variant.label,
-      };
-    }
-  }
+  if (result)
+    return result;
+
+  const thresholded =
+    image
+      .clone()
+      .greyscale()
+      .threshold({
+        max: 160,
+      });
+
+  result =
+    await tryBitmap(
+      thresholded.bitmap,
+      `${prefix}:threshold`
+    );
+
+  if (result)
+    return result;
 
   return null;
-}
-
-function cropCandidates(image: any): any[] {
-
-  const w = image.bitmap.width;
-  const h = image.bitmap.height;
-
-  const candidates: any[] = [];
-
-  // Full image
-  candidates.push(image.clone());
-
-  // Large right-hand region.
-  // Aadhaar QR is commonly positioned toward the
-  // right side of the document.
-  candidates.push(
-    image.clone().crop(
-      Math.floor(w * 0.35),
-      0,
-      Math.floor(w * 0.65),
-      h
-    )
-  );
-
-  // Lower-right region.
-  candidates.push(
-    image.clone().crop(
-      Math.floor(w * 0.35),
-      Math.floor(h * 0.25),
-      Math.floor(w * 0.65),
-      Math.floor(h * 0.75)
-    )
-  );
-
-  // Lower half
-  candidates.push(
-    image.clone().crop(
-      0,
-      Math.floor(h * 0.35),
-      w,
-      Math.floor(h * 0.65)
-    )
-  );
-
-  // Right half
-  candidates.push(
-    image.clone().crop(
-      Math.floor(w * 0.5),
-      0,
-      Math.floor(w * 0.5),
-      h
-    )
-  );
-
-  // Four large overlapping tiles.
-  const tileW = Math.floor(w * 0.60);
-  const tileH = Math.floor(h * 0.60);
-
-  const positions = [
-    [0, 0],
-    [Math.floor(w * 0.40), 0],
-    [0, Math.floor(h * 0.40)],
-    [
-      Math.floor(w * 0.40),
-      Math.floor(h * 0.40),
-    ],
-  ];
-
-  for (const [x, y] of positions) {
-
-    const safeX = Math.min(x, w - tileW);
-    const safeY = Math.min(y, h - tileH);
-
-    candidates.push(
-      image.clone().crop(
-        safeX,
-        safeY,
-        tileW,
-        tileH
-      )
-    );
-  }
-
-  return candidates;
 }
 
 export async function decodeAadhaarQR(
   imageBuffer: Buffer
 ): Promise<QRDecodeResult | null> {
+  const original =
+    await Jimp.read(
+      imageBuffer
+    );
 
-  const original = await Jimp.read(
-    imageBuffer
-  );
+  const image =
+    original.clone();
 
-  /*
-   * IMPORTANT:
-   *
-   * Do not aggressively resize a camera image
-   * before QR detection.
-   *
-   * Dense Aadhaar Secure QR codes contain a lot
-   * of information and therefore need sufficient
-   * pixel density.
-   */
+  const maxDim =
+    Math.max(
+      image.bitmap.width,
+      image.bitmap.height
+    );
 
-  const maxDim = Math.max(
-    original.bitmap.width,
-    original.bitmap.height
-  );
-
-  let image = original.clone();
-
-  if (maxDim > 5000) {
-
-    const scale = 5000 / maxDim;
+  if (
+    maxDim >
+    4000
+  ) {
+    const scale =
+      4000 /
+      maxDim;
 
     image.resize(
       Math.round(
-        original.bitmap.width * scale
+        image.bitmap.width *
+          scale
       ),
       Math.round(
-        original.bitmap.height * scale
+        image.bitmap.height *
+          scale
       )
     );
   }
 
   /*
-   * Stage 1:
-   * Try the complete image.
+   * Pass 1: whole image.
    */
+  let result =
+    await tryImage(
+      image,
+      "full"
+    );
 
-  let result = await tryVariants(
-    image,
-    "full"
-  );
-
-  if (result) {
+  if (result)
     return result;
-  }
 
   /*
-   * Stage 2:
-   * Search spatial regions.
+   * Pass 2: tiled image search.
    *
-   * This is the important addition for
-   * Aadhaar photographs.
+   * This handles photographs where the QR
+   * occupies only a portion of the Aadhaar.
    */
-
-  const candidates =
-    cropCandidates(image);
+  const fractions =
+    [
+      0.55,
+      0.70,
+      0.85,
+    ];
 
   for (
-    let i = 0;
-    i < candidates.length;
-    i++
+    const fraction
+      of fractions
   ) {
-
-    result = await tryVariants(
-      candidates[i],
-      `crop-${i}`
-    );
-
-    if (result) {
-      return result;
-    }
-  }
-
-  /*
-   * Stage 3:
-   * Add a white quiet zone around
-   * the strongest candidate regions.
-   */
-
-  for (
-    let i = 0;
-    i < Math.min(candidates.length, 5);
-    i++
-  ) {
-
-    const candidate =
-      candidates[i];
-
-    const pad = Math.max(
-      40,
-      Math.round(
-        Math.min(
-          candidate.bitmap.width,
-          candidate.bitmap.height
-        ) * 0.05
-      )
-    );
-
-    const padded =
-      new Jimp(
-        candidate.bitmap.width +
-          pad * 2,
-        candidate.bitmap.height +
-          pad * 2,
-        0xffffffff
+    const tileW =
+      Math.floor(
+        image.bitmap.width *
+          fraction
       );
 
-    padded.composite(
-      candidate,
-      pad,
-      pad
-    );
+    const tileH =
+      Math.floor(
+        image.bitmap.height *
+          fraction
+      );
 
-    result = await tryVariants(
-      padded,
-      `padded-${i}`
-    );
+    const xs =
+      [
+        0,
+        Math.max(
+          0,
+          image.bitmap.width -
+            tileW
+        ),
+        Math.floor(
+          (
+            image.bitmap.width -
+              tileW
+          ) /
+            2
+        ),
+      ];
 
-    if (result) {
-      return result;
+    const ys =
+      [
+        0,
+        Math.max(
+          0,
+          image.bitmap.height -
+            tileH
+        ),
+        Math.floor(
+          (
+            image.bitmap.height -
+              tileH
+          ) /
+            2
+        ),
+      ];
+
+    for (
+      const x of xs
+    ) {
+      for (
+        const y of ys
+      ) {
+        const tile =
+          image.clone();
+
+        tile.crop(
+          x,
+          y,
+          tileW,
+          tileH
+        );
+
+        result =
+          await tryImage(
+            tile,
+            `tile-${fraction}-${x}-${y}`
+          );
+
+        if (result)
+          return result;
+
+        /*
+         * Dense Aadhaar QR often benefits
+         * significantly from enlargement.
+         */
+        const enlarged =
+          tile.clone().scale(
+            2,
+            Jimp.RESIZE_BICUBIC
+          );
+
+        result =
+          await tryImage(
+            enlarged,
+            `tile2x-${fraction}-${x}-${y}`
+          );
+
+        if (result)
+          return result;
+      }
     }
+  }
+
+  /*
+   * Pass 3: add QR quiet zone.
+   */
+  const padded =
+    makePadded(
+      image,
+      120
+    );
+
+  result =
+    await tryImage(
+      padded,
+      "padded"
+    );
+
+  if (result)
+    return result;
+
+  /*
+   * Pass 4: rotation fallback.
+   */
+  for (
+    const angle of [
+      90,
+      180,
+      270,
+    ]
+  ) {
+    const rotated =
+      image
+        .clone()
+        .rotate(
+          angle
+        );
+
+    result =
+      await tryImage(
+        rotated,
+        `rotated-${angle}`
+      );
+
+    if (result)
+      return result;
   }
 
   return null;
