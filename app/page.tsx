@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import NovaScanner from '@/nova-engine/NovaScanner';
+import NovaScanner from './app/nova-engine/NovaScanner';
 
 export default function CheckoutVerificationModal() {
   const [useNova, setUseNova] = useState(false);
