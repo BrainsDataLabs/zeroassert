@@ -7,6 +7,480 @@ import React, {
 } from "react";
 
 import jsQR from "jsqr";
+import {
+  BrowserMultiFormatReader,
+  BarcodeFormat,
+  DecodeHintType,
+} from "@zxing/browser";
+
+function isAadhaarSecureQR(data) {
+  if (typeof data !== "string") return false;
+
+  const normalized = data
+    .replace(/\s+/g, "")
+    .trim();
+
+  return (
+    /^\d+$/.test(normalized) &&
+    normalized.length >= 300 &&
+    normalized.length <= 15000
+  );
+}
+
+function normalizeQR(data) {
+  return String(data || "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function getCanvasContext(canvas) {
+  return canvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+}
+
+function drawImageCover(
+  ctx,
+  image,
+  width,
+  height
+) {
+  ctx.clearRect(
+    0,
+    0,
+    width,
+    height
+  );
+
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
+
+  const scale = Math.min(
+    width / image.width,
+    height / image.height
+  );
+
+  const drawW =
+    image.width * scale;
+
+  const drawH =
+    image.height * scale;
+
+  const x =
+    (width - drawW) / 2;
+
+  const y =
+    (height - drawH) / 2;
+
+  ctx.drawImage(
+    image,
+    x,
+    y,
+    drawW,
+    drawH
+  );
+}
+
+function makeImageVariants(
+  sourceCanvas
+) {
+  const variants = [];
+
+  const width =
+    sourceCanvas.width;
+
+  const height =
+    sourceCanvas.height;
+
+  // Full image.
+  variants.push({
+    canvas: sourceCanvas,
+    name: "full",
+  });
+
+  // Overlapping tiles.
+  //
+  // This is important for phone photos:
+  // the Aadhaar QR may only occupy 20-35%
+  // of the entire image.
+  const tileSizes = [
+    0.55,
+    0.70,
+    0.85,
+  ];
+
+  for (
+    const fraction of tileSizes
+  ) {
+    const tileW =
+      Math.floor(
+        width * fraction
+      );
+
+    const tileH =
+      Math.floor(
+        height * fraction
+      );
+
+    const stepX =
+      Math.max(
+        1,
+        Math.floor(
+          (width - tileW) /
+            2
+        )
+      );
+
+    const stepY =
+      Math.max(
+        1,
+        Math.floor(
+          (height - tileH) /
+            2
+        )
+      );
+
+    const positions = [
+      [0, 0],
+      [
+        width - tileW,
+        0,
+      ],
+      [
+        0,
+        height - tileH,
+      ],
+      [
+        width - tileW,
+        height - tileH,
+      ],
+      [
+        stepX,
+        stepY,
+      ],
+    ];
+
+    positions.forEach(
+      ([x, y], index) => {
+        const tile =
+          document.createElement(
+            "canvas"
+          );
+
+        tile.width =
+          tileW;
+
+        tile.height =
+          tileH;
+
+        const tctx =
+          getCanvasContext(
+            tile
+          );
+
+        tctx.drawImage(
+          sourceCanvas,
+          x,
+          y,
+          tileW,
+          tileH,
+          0,
+          0,
+          tileW,
+          tileH
+        );
+
+        variants.push({
+          canvas: tile,
+          name:
+            `tile-${fraction}-${index}`,
+        });
+      }
+    );
+  }
+
+  return variants;
+}
+
+function preprocessCanvas(
+  input,
+  mode
+) {
+  const canvas =
+    document.createElement(
+      "canvas"
+    );
+
+  canvas.width =
+    input.width;
+
+  canvas.height =
+    input.height;
+
+  const ctx =
+    getCanvasContext(
+      canvas
+    );
+
+  ctx.drawImage(
+    input,
+    0,
+    0
+  );
+
+  if (mode === "original") {
+    return canvas;
+  }
+
+  const imageData =
+    ctx.getImageData(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+  const data =
+    imageData.data;
+
+  for (
+    let i = 0;
+    i < data.length;
+    i += 4
+  ) {
+    let value =
+      0.299 *
+        data[i] +
+      0.587 *
+        data[i + 1] +
+      0.114 *
+        data[i + 2];
+
+    if (
+      mode === "contrast"
+    ) {
+      value =
+        (value - 128) *
+          1.8 +
+        128;
+    }
+
+    if (
+      mode === "threshold"
+    ) {
+      value =
+        value < 160
+          ? 0
+          : 255;
+    }
+
+    value =
+      Math.max(
+        0,
+        Math.min(
+          255,
+          value
+        )
+      );
+
+    data[i] =
+      value;
+    data[i + 1] =
+      value;
+    data[i + 2] =
+      value;
+    data[i + 3] =
+      255;
+  }
+
+  ctx.putImageData(
+    imageData,
+    0,
+    0
+  );
+
+  return canvas;
+}
+
+function decodeWithJsQR(
+  canvas
+) {
+  try {
+    const ctx =
+      getCanvasContext(
+        canvas
+      );
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const result =
+      jsQR(
+        imageData.data,
+        imageData.width,
+        imageData.height,
+        {
+          inversionAttempts:
+            "attemptBoth",
+        }
+      );
+
+    if (
+      result?.data &&
+      isAadhaarSecureQR(
+        result.data
+      )
+    ) {
+      return normalizeQR(
+        result.data
+      );
+    }
+  } catch {}
+
+  return null;
+}
+
+async function decodeWithZXing(
+  canvas
+) {
+  try {
+    const reader =
+      new BrowserMultiFormatReader();
+
+    const hints =
+      new Map();
+
+    hints.set(
+      DecodeHintType.POSSIBLE_FORMATS,
+      [
+        BarcodeFormat.QR_CODE,
+      ]
+    );
+
+    hints.set(
+      DecodeHintType.TRY_HARDER,
+      true
+    );
+
+    reader.hints =
+      hints;
+
+    const result =
+      await reader.decodeFromCanvas(
+        canvas
+      );
+
+    const text =
+      result?.getText?.();
+
+    if (
+      text &&
+      isAadhaarSecureQR(
+        text
+      )
+    ) {
+      return normalizeQR(
+        text
+      );
+    }
+  } catch {}
+
+  return null;
+}
+
+async function findAadhaarQR(
+  sourceCanvas,
+  setProgress,
+  setStatus
+) {
+  const variants =
+    makeImageVariants(
+      sourceCanvas
+    );
+
+  const modes = [
+    "original",
+    "contrast",
+    "threshold",
+  ];
+
+  const total =
+    variants.length *
+    modes.length;
+
+  let completed = 0;
+
+  for (
+    const variant of variants
+  ) {
+    for (
+      const mode of modes
+    ) {
+      completed++;
+
+      const percent =
+        Math.min(
+          42,
+          15 +
+            Math.floor(
+              (completed /
+                total) *
+                27
+            )
+        );
+
+      setProgress(
+        percent
+      );
+
+      setStatus(
+        `Searching Aadhaar QR... ${percent}%`
+      );
+
+      const processed =
+        preprocessCanvas(
+          variant.canvas,
+          mode
+        );
+
+      /*
+       * ZXing first.
+       */
+      const zxing =
+        await decodeWithZXing(
+          processed
+        );
+
+      if (zxing) {
+        return zxing;
+      }
+
+      /*
+       * jsQR fallback.
+       */
+      const jsqr =
+        decodeWithJsQR(
+          processed
+        );
+
+      if (jsqr) {
+        return jsqr;
+      }
+    }
+  }
+
+  return null;
+}
 
 export default function NovaScanner({
   onVerified,
@@ -66,7 +540,8 @@ export default function NovaScanner({
           success,
           proof,
           error,
-        } = event.data;
+        } =
+          event.data;
 
         if (
           typeof progress ===
@@ -86,6 +561,10 @@ export default function NovaScanner({
         if (success) {
           setLoading(
             false
+          );
+
+          setStatusText(
+            "Proof generated successfully."
           );
 
           onVerified(
@@ -111,7 +590,7 @@ export default function NovaScanner({
         );
 
         setError(
-          "Client-side worker failed."
+          "Client-side proving worker failed."
         );
 
         setLoading(
@@ -139,7 +618,7 @@ export default function NovaScanner({
     setProgress(5);
 
     setStatusText(
-      "Reading Aadhaar image..."
+      "Loading Aadhaar image..."
     );
 
     try {
@@ -151,14 +630,13 @@ export default function NovaScanner({
       const canvas =
         canvasRef.current;
 
-      const ctx =
-        canvas.getContext(
-          "2d",
-          {
-            willReadFrequently:
-              true,
-          }
-        );
+      /*
+       * Keep enough resolution for the dense
+       * Aadhaar Secure QR but avoid exploding
+       * browser memory.
+       */
+      const MAX_DIM =
+        3200;
 
       let width =
         image.width;
@@ -166,167 +644,66 @@ export default function NovaScanner({
       let height =
         image.height;
 
-      const maxDim =
-        2500;
+      const scale =
+        Math.min(
+          1,
+          MAX_DIM /
+            Math.max(
+              width,
+              height
+            )
+        );
 
-      if (
-        width > maxDim ||
-        height > maxDim
-      ) {
-        const scale =
-          maxDim /
-          Math.max(
-            width,
-            height
-          );
+      width =
+        Math.round(
+          width *
+            scale
+        );
 
-        width =
-          Math.round(
-            width *
-              scale
-          );
-
-        height =
-          Math.round(
-            height *
-              scale
-          );
-      }
-
-      const pad =
-        80;
+      height =
+        Math.round(
+          height *
+            scale
+        );
 
       canvas.width =
-        width +
-        pad * 2;
+        width;
 
       canvas.height =
-        height +
-        pad * 2;
+        height;
 
-      ctx.fillStyle =
-        "#FFFFFF";
+      const ctx =
+        getCanvasContext(
+          canvas
+        );
 
-      ctx.fillRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-      ctx.drawImage(
+      drawImageCover(
+        ctx,
         image,
-        pad,
-        pad,
         width,
         height
       );
 
-      setProgress(20);
+      image.close?.();
 
-      setStatusText(
-        "Scanning Aadhaar Secure QR..."
+      setProgress(
+        10
       );
 
-      const imageData =
-        ctx.getImageData(
-          0,
-          0,
-          canvas.width,
-          canvas.height
+      setStatusText(
+        "Searching the complete Aadhaar image..."
+      );
+
+      const qrData =
+        await findAadhaarQR(
+          canvas,
+          setProgress,
+          setStatusText
         );
 
-      let result =
-        jsQR(
-          imageData.data,
-          imageData.width,
-          imageData.height,
-          {
-            inversionAttempts:
-              "attemptBoth",
-          }
-        );
-
-      if (!result) {
-        setProgress(
-          30
-        );
-
-        setStatusText(
-          "Trying high-contrast QR scan..."
-        );
-
-        const threshold =
-          new Uint8ClampedArray(
-            imageData.data
-              .length
-          );
-
-        for (
-          let i = 0;
-          i <
-          imageData.data.length;
-          i += 4
-        ) {
-          const luminance =
-            0.299 *
-              imageData.data[
-                i
-              ] +
-            0.587 *
-              imageData.data[
-                i + 1
-              ] +
-            0.114 *
-              imageData.data[
-                i + 2
-              ];
-
-          const value =
-            luminance <
-            140
-              ? 0
-              : 255;
-
-          threshold[
-            i
-          ] =
-            value;
-
-          threshold[
-            i + 1
-          ] =
-            value;
-
-          threshold[
-            i + 2
-          ] =
-            value;
-
-          threshold[
-            i + 3
-          ] =
-            255;
-        }
-
-        result =
-          jsQR(
-            threshold,
-            imageData.width,
-            imageData.height,
-            {
-              inversionAttempts:
-                "attemptBoth",
-            }
-          );
-      }
-
-      if (
-        !result ||
-        !result.data
-      ) {
+      if (!qrData) {
         throw new Error(
-          "No Aadhaar Secure QR detected. Ensure the large QR is completely visible and in focus."
+          "Aadhaar Secure QR could not be detected. Try a sharper image with the complete large QR and all four finder corners visible."
         );
       }
 
@@ -335,13 +712,12 @@ export default function NovaScanner({
       );
 
       setStatusText(
-        "QR decoded. Preparing local proof..."
+        "Aadhaar QR decoded. Preparing local proof..."
       );
 
       workerRef.current?.postMessage(
         {
-          qrData:
-            result.data,
+          qrData,
         }
       );
     } catch (err) {
@@ -351,7 +727,7 @@ export default function NovaScanner({
 
       setError(
         err?.message ||
-          "Could not read Aadhaar QR."
+          "Could not process Aadhaar image."
       );
 
       setLoading(
@@ -364,7 +740,7 @@ export default function NovaScanner({
     <div
       style={{
         maxWidth:
-          "400px",
+          "420px",
         margin:
           "0 auto",
         padding:
@@ -382,11 +758,27 @@ export default function NovaScanner({
           textAlign:
             "center",
           marginBottom:
-            "1rem",
+            "0.6rem",
         }}
       >
         Nova Client-Side Verifier
       </h3>
+
+      <p
+        style={{
+          fontSize:
+            "0.78rem",
+          color:
+            "#6B7280",
+          textAlign:
+            "center",
+          marginBottom:
+            "1rem",
+        }}
+      >
+        Aadhaar QR processing remains
+        on this device.
+      </p>
 
       {error && (
         <div
@@ -424,17 +816,14 @@ export default function NovaScanner({
           fileInputRef
         }
         type="file"
-        accept="image/*"
+        accept="image/png,image/jpeg,image/webp"
         style={{
           display:
             "none",
         }}
-        onChange={(
-          e
-        ) =>
+        onChange={(e) =>
           processImageFile(
-            e.target
-              .files?.[0]
+            e.target.files?.[0]
           )
         }
       />
@@ -450,12 +839,9 @@ export default function NovaScanner({
           display:
             "none",
         }}
-        onChange={(
-          e
-        ) =>
+        onChange={(e) =>
           processImageFile(
-            e.target
-              .files?.[0]
+            e.target.files?.[0]
           )
         }
       />
@@ -484,7 +870,8 @@ export default function NovaScanner({
                 "#FFFFFF",
               padding:
                 "0.85rem",
-              border: 0,
+              border:
+                0,
               borderRadius:
                 "8px",
               fontWeight:
@@ -507,7 +894,8 @@ export default function NovaScanner({
                 "#FFFFFF",
               padding:
                 "0.85rem",
-              border: 0,
+              border:
+                0,
               borderRadius:
                 "8px",
               fontWeight:
@@ -518,12 +906,7 @@ export default function NovaScanner({
           </button>
         </div>
       ) : (
-        <div
-          style={{
-            textAlign:
-              "center",
-          }}
-        >
+        <div>
           <div
             style={{
               padding:
@@ -534,6 +917,8 @@ export default function NovaScanner({
                 "8px",
               marginBottom:
                 "1rem",
+              textAlign:
+                "center",
             }}
           >
             {statusText}
@@ -563,7 +948,7 @@ export default function NovaScanner({
           <div
             style={{
               height:
-                "8px",
+                "10px",
               background:
                 "#E5E7EB",
               borderRadius:
@@ -581,7 +966,7 @@ export default function NovaScanner({
                 background:
                   "#2563EB",
                 transition:
-                  "width 0.3s",
+                  "width 0.2s",
               }}
             />
           </div>
@@ -589,4 +974,4 @@ export default function NovaScanner({
       )}
     </div>
   );
-}
+        
