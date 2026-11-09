@@ -5,25 +5,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { BrowserQRCodeReader } from '@zxing/browser';
 
 export default function NovaScanner({ onVerified }) {
-  const [scanning, setScanning] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState('');
   const [error, setError] = useState('');
-  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
-  const [facingMode, setFacingMode] = useState('environment'); // 'environment' = rear, 'user' = front
   
-  const videoRef = useRef(null);
-  const codeReader = useRef(new BrowserQRCodeReader());
   const workerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
-    // Check available devices to see if flip button should be shown
-    BrowserQRCodeReader.listVideoInputDevices()
-      .then((devices) => {
-        if (devices.length > 1) setHasMultipleCameras(true);
-      })
-      .catch(() => {});
-
     // Initialize Web Worker
     workerRef.current = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
     workerRef.current.onmessage = (event) => {
@@ -32,82 +22,53 @@ export default function NovaScanner({ onVerified }) {
       if (status) setStatusText(status);
 
       if (success) {
-        setScanning(false);
-        codeReader.current.reset();
+        setLoading(false);
         onVerified(proof);
       } else if (error) {
         setError(error);
-        setScanning(false);
+        setLoading(false);
       }
     };
 
     return () => {
       workerRef.current?.terminate();
-      codeReader.current.reset();
     };
   }, [onVerified]);
 
-  const startCameraScan = async (targetFacingMode = 'environment') => {
+  const handleImageCapture = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     setError('');
-    setScanning(true);
-    setProgress(5);
-    setStatusText('Requesting camera permission...');
+    setLoading(true);
+    setProgress(10);
+    setStatusText('Processing captured image frame...');
 
     try {
-      codeReader.current.reset();
-
-      // 1. Force native browser permission popup via standard getUserMedia
-      const constraints = {
-        video: { facingMode: targetFacingMode }
-      };
+      // Create image bitmap or element to extract pixels for ZXing browser reader
+      const reader = new BrowserQRCodeReader();
+      const imageUrl = URL.createObjectURL(file);
       
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      setStatusText('Scanning QR matrix on client device...');
+      setProgress(30);
+
+      const result = await reader.decodeFromImageUrl(imageUrl);
       
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        videoRef.current.play();
-      }
+      if (result) {
+        const rawText = result.getText();
+        setStatusText('QR successfully decoded! Generating ZK proof...');
+        setProgress(50);
 
-      setStatusText('Align QR code within frame...');
-      setProgress(10);
-
-      // 2. Decode from the active video stream element
-      await codeReader.current.decodeFromStream(
-        mediaStream,
-        videoRef.current,
-        (result) => {
-          if (result) {
-            const rawText = result.getText();
-            codeReader.current.reset();
-            
-            // Stop media tracks
-            mediaStream.getTracks().forEach(track => track.stop());
-
-            setStatusText('QR captured! Generating ZK proof...');
-            workerRef.current.postMessage({ qrData: rawText });
-          }
-        }
-      );
-    } catch (err) {
-      console.error('Camera error:', err);
-      if (window.location.protocol !== 'https:') {
-        setError('Security Error: Camera requires an HTTPS connection.');
+        // Hand off payload to Web Worker for client-side proving
+        workerRef.current.postMessage({ qrData: rawText });
       } else {
-        setError('Camera access denied. Please allow camera permissions in your browser settings.');
+        throw new Error('No QR code detected in the captured photo.');
       }
-      setScanning(false);
+    } catch (err) {
+      console.error(err);
+      setError('Could not read QR code from photo. Ensure the QR code is clearly visible and well-lit.');
+      setLoading(false);
     }
-  };
-
-  const toggleCamera = () => {
-    const newMode = facingMode === 'environment' ? 'user' : 'environment';
-    setFacingMode(newMode);
-    codeReader.current.reset();
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject;
-      stream.getTracks().forEach(track => track.stop());
-    }
-    startCameraScan(newMode);
   };
 
   return (
@@ -122,36 +83,32 @@ export default function NovaScanner({ onVerified }) {
         </div>
       )}
 
-      {!scanning ? (
+      {/* Hidden native file input with environment camera capture hook */}
+      <input 
+        type="file" 
+        accept="image/*" 
+        capture="environment" 
+        ref={fileInputRef}
+        onChange={handleImageCapture}
+        style={{ display: 'none' }}
+      />
+
+      {!loading ? (
         <button
-          onClick={() => startCameraScan('environment')}
+          onClick={() => fileInputRef.current?.click()}
           style={{ width: '100%', background: '#2563EB', color: '#fff', padding: '0.75rem', borderRadius: '8px', border: 'none', fontWeight: '500', cursor: 'pointer' }}
         >
-          Scan Physical Card (Camera)
+          📷 Open Camera & Snap QR Code
         </button>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div style={{ position: 'relative' }}>
-            <video 
-              ref={videoRef} 
-              muted 
-              playsInline 
-              style={{ width: '100%', height: '240px', background: '#000', borderRadius: '8px', objectFit: 'cover' }} 
-            />
-            
-            {hasMultipleCameras && (
-              <button
-                onClick={toggleCamera}
-                style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.7)', color: '#fff', border: 'none', padding: '0.4rem 0.75rem', borderRadius: '6px', fontSize: '0.75rem', cursor: 'pointer' }}
-              >
-                🔄 Flip Camera
-              </button>
-            )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'center' }}>
+          <div style={{ padding: '1rem', background: '#F3F4F6', borderRadius: '8px', fontSize: '0.9rem', color: '#374151' }}>
+            {statusText}
           </div>
           
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '0.3rem', color: '#4B5563' }}>
-              <span>{statusText}</span>
+              <span>Progress</span>
               <span>{progress}%</span>
             </div>
             <div style={{ width: '100%', background: '#E5E7EB', height: '8px', borderRadius: '4px', overflow: 'hidden' }}>
