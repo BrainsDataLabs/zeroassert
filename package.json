@@ -3,29 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "next build"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
   },
   "dependencies": {
+    "@anon-aadhaar/core": "^2.0.0",
+    "@anon-aadhaar/react": "^2.0.0",
+    "@prisma/client": "^5.0.0",
     "@shopify/polaris": "^13.0.0",
-    "snarkjs": "^0.7.4",
+    "@shopify/shopify-api": "^9.0.0",
+    "@shopify/shopify-app-remix": "^3.0.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "anon-aadhaar-react": "latest",
+    "jimp": "^0.22.10",
+    "jsqr": "^1.4.0",
     "next": "latest",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "@prisma/client": "^5.0.0",
-    "@shopify/shopify-api": "^9.0.0",
-    "@shopify/shopify-app-remix": "^3.0.0",
-    "anon-aadhaar-react": "latest",
-    "@supabase/supabase-js": "^2.39.0",
-    "@anon-aadhaar/core": "^2.0.0",
-    "@anon-aadhaar/react": "^2.0.0",
-    "jsqr": "^1.4.0",
-    "jimp": "^0.22.10",
+    "snarkjs": "^0.7.4",
     "@zxing/library": "^0.21.3"
-    
   },
   "devDependencies": {
-    "prisma": "^5.0.0",
     "eslint": "^8",
-    "eslint-config-next": "latest"
+    "eslint-config-next": "latest",
+    "prisma": "^5.0.0"
   }
 }
