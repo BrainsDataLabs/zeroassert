@@ -1,164 +1,126 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 
-export const dynamic = 'force-dynamic';
-
-function bufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let bin = '';
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-export default function CheckoutGate() {
+export default function ZeroAssert() {
   const [isVerified, setIsVerified] = useState(false);
-  const [hasPasskey, setHasPasskey] = useState(false);
-  const [passkeySaved, setPasskeySaved] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState('');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [serverDebug, setServerDebug] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const checkoutId = 'chk_live_session_9823';
-  const shopDomain = 'standalone-test.myshopify.com';
-
-  useEffect(() => {
-    if (localStorage.getItem('zeroassert_passkey_id')) setHasPasskey(true);
-  }, []);
-
-  const sendPayload = async (file?: File, isSim = false) => {
+  const handleUpload = async (file: File | null, bypass = false) => {
+    if (!file && !bypass) return;
+    
     setLoading(true);
-    setErrorMsg(null);
-    setServerDebug(null);
-    setStatusText(isSim ? 'Simulating check...' : 'Streaming to edge...');
+    setError('');
 
     try {
       const fd = new FormData();
-      fd.append('checkout_id', checkoutId);
-      fd.append('shop_domain', shopDomain);
-      if (isSim) fd.append('bypass_simulation', 'true');
       if (file) fd.append('file', file);
+      fd.append('bypass_simulation', bypass.toString());
+      
+      // Shopify simulated params
+      fd.append('checkout_id', 'chk_live_session_9823');
+      fd.append('shop_domain', 'standalone-test.myshopify.com');
 
-      const res = await fetch('/api/verify-ephemeral', { method: 'POST', body: fd });
+      const res = await fetch('/api/verify-ephemeral', { 
+        method: 'POST', 
+        body: fd 
+      });
+
       const data = await res.json();
-
-      if (data.debug || data.db_status) {
-        setServerDebug(JSON.stringify(data.debug || data.db_status));
-      }
 
       if (data.success && data.age_verified) {
         setIsVerified(true);
-        setStatusText('');
+        setError('');
       } else {
-        setErrorMsg(data.error || 'Verification failed. Try a clearer image.');
+        // Directly display the detailed educational error from the API
+        setError(data.error || 'Verification failed. Please try again.');
+        setIsVerified(false);
       }
-    } catch {
-      setErrorMsg('Network error connecting to verification engine.');
-    } finally {
-      setLoading(false);
-      if (fileRef.current) fileRef.current.value = '';
-    }
-  };
-
-  const handleCreatePasskey = async () => {
-    if (!window.PublicKeyCredential) return setErrorMsg('Passkeys not supported.');
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const challenge = crypto.getRandomValues(new Uint8Array(32));
-      const userId = crypto.getRandomValues(new Uint8Array(16));
-      const cred = (await navigator.credentials.create({
-        publicKey: {
-          challenge,
-          rp: { name: 'ZeroAssert' },
-          user: { id: userId, name: 'buyer', displayName: 'Verified Buyer' },
-          pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-          authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
-          timeout: 60000,
-        },
-      })) as PublicKeyCredential;
-
-      if (cred) {
-        localStorage.setItem('zeroassert_passkey_id', bufferToBase64(cred.rawId));
-        setPasskeySaved(true);
-      }
-    } catch {
-      setErrorMsg('Passkey enrollment cancelled.');
+    } catch (err: any) {
+      setError('Network error. Unable to reach verification engine.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerifyPasskey = async () => {
-    const credId = localStorage.getItem('zeroassert_passkey_id');
-    if (!credId) return setHasPasskey(false);
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const challenge = crypto.getRandomValues(new Uint8Array(32));
-      const assertion = await navigator.credentials.get({
-        publicKey: { challenge, timeout: 60000, userVerification: 'required' },
-      });
-      if (assertion) setIsVerified(true);
-    } catch {
-      setErrorMsg('Biometric authentication cancelled.');
-    } finally {
-      setLoading(false);
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleUpload(e.target.files[0], false);
     }
   };
 
   return (
-    <main style={{ minHeight: '100dvh', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', fontFamily: 'sans-serif' }}>
-      <div style={{ maxWidth: '380px', width: '100%', background: '#fff', borderRadius: '16px', padding: '24px', boxShadow: '0 4px 20px rgba(0,0,0,0.06)', border: '1px solid #e2e8f0', textAlign: 'center' }}>
-        <div style={{ fontSize: '28px', marginBottom: '8px' }}>🛡️</div>
-        <h2 style={{ fontSize: '18px', fontWeight: '700', color: '#0f172a', margin: '0 0 6px 0' }}>Age Verification Required</h2>
-        <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 16px 0' }}>Restricted items detected. Complete verification to unlock payment.</p>
+    <div style={{ minHeight: '100vh', backgroundColor: '#F3F4F6', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', padding: '2rem', maxWidth: '400px', width: '100%', textAlign: 'center' }}>
+        
+        <div style={{ marginBottom: '1.5rem' }}>
+          <svg style={{ width: '48px', height: '48px', margin: '0 auto', color: '#3B82F6' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: '600', marginTop: '0.5rem', color: '#111827' }}>Age Verification Required</h2>
+          <p style={{ fontSize: '0.875rem', color: '#6B7280', marginTop: '0.25rem' }}>Restricted items detected. Complete verification to unlock payment.</p>
+        </div>
 
-        {errorMsg && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: '12px', padding: '8px', borderRadius: '8px', marginBottom: '12px', wordBreak: 'break-word' }}>{errorMsg}</div>}
-      
-
-        {!isVerified ? (
-          <div style={{ padding: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', marginBottom: '16px' }}>
-            {hasPasskey ? (
-              <>
-                <button type="button" onClick={handleVerifyPasskey} disabled={loading} style={{ width: '100%', background: '#2563eb', color: '#fff', padding: '12px', borderRadius: '8px', fontSize: '13px', fontWeight: '600', border: 'none', cursor: 'pointer' }}>⚡ 1-Click Biometric Verification</button>
-                <button type="button" onClick={() => setHasPasskey(false)} style={{ background: 'none', border: 'none', color: '#6366f1', fontSize: '11px', marginTop: '8px', cursor: 'pointer', textDecoration: 'underline' }}>Verify using QR instead</button>
-              </>
-            ) : (
-              <>
-                <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => e.target.files?.[0] && sendPayload(e.target.files[0])} />
-                <button type="button" onClick={() => fileRef.current?.click()} disabled={loading} style={{ width: '100%', background: '#0f172a', color: '#fff', fontWeight: 600, fontSize: '13px', padding: '12px', borderRadius: '8px', border: 'none', cursor: 'pointer' }}>Upload Secure QR Screenshot</button>
-                <p style={{ fontSize: '11px', color: '#94a3b8', margin: '8px 0 0 0' }}>Processed ephemerally in RAM. Zero data stored.</p>
-              </>
-            )}
-
-            {loading && <p style={{ fontSize: '12px', color: '#4f46e5', fontWeight: '500', margin: '10px 0 0 0' }}>{statusText || 'Processing...'}</p>}
-
-            <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px dashed #e2e8f0' }}>
-              <button type="button" onClick={() => sendPayload(undefined, true)} style={{ background: 'none', border: '1px solid #cbd5e1', borderRadius: '6px', color: '#64748b', fontSize: '11px', padding: '4px 8px', cursor: 'pointer' }}>⚡ [Dev Test: Simulate Verification]</button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '12px', padding: '12px', marginBottom: '16px' }}>
-            <p style={{ fontSize: '13px', fontWeight: '600', color: '#166534', margin: '0 0 2px 0' }}>✅ Age Verified (18+)</p>
-            <p style={{ fontSize: '11px', color: '#15803d', margin: 0 }}>Payment methods unlocked.</p>
-            {!passkeySaved ? (
-              <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid #dcfce7' }}>
-                <button type="button" onClick={handleCreatePasskey} disabled={loading} style={{ background: '#15803d', color: '#fff', fontSize: '12px', fontWeight: '600', padding: '8px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer' }}>🔐 Enable 1-Click Passkey for Next Time</button>
-              </div>
-            ) : (
-              <p style={{ fontSize: '11px', color: '#166534', marginTop: '6px' }}>⚡ Passkey enrolled! Future checkouts verify in 1 click.</p>
-            )}
+        {error && (
+          <div style={{ backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '0.75rem', borderRadius: '8px', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
+            {error}
           </div>
         )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', opacity: isVerified ? 1 : 0.35, pointerEvents: isVerified ? 'auto' : 'none' }}>
-          <button type="button" style={{ width: '100%', background: '#0f172a', color: '#fff', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600', border: 'none', cursor: isVerified ? 'pointer' : 'not-allowed' }}>Pay via UPI (Instant Intent)</button>
-          <button type="button" style={{ width: '100%', background: '#fff', color: '#334155', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600', border: '1px solid #cbd5e1', cursor: isVerified ? 'pointer' : 'not-allowed' }}>Pay via Credit / Debit Card</button>
-        </div>
+        {!isVerified ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <input 
+              type="file" 
+              accept="image/*" 
+              ref={fileInputRef}
+              onChange={onFileChange}
+              style={{ display: 'none' }}
+            />
+            
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              style={{ width: '100%', backgroundColor: '#111827', color: '#ffffff', padding: '0.75rem', borderRadius: '8px', fontWeight: '500', border: 'none', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1 }}
+            >
+              {loading ? 'Processing Securely...' : 'Upload Secure QR Screenshot'}
+            </button>
+            
+            <p style={{ fontSize: '0.75rem', color: '#9CA3AF' }}>Processed ephemerally in RAM. Zero data stored.</p>
+            
+            {process.env.NODE_ENV !== 'production' && (
+              <button 
+                onClick={() => handleUpload(null, true)}
+                disabled={loading}
+                style={{ width: '100%', backgroundColor: '#ffffff', color: '#6B7280', border: '1px dashed #D1D5DB', padding: '0.5rem', borderRadius: '8px', fontSize: '0.875rem', cursor: 'pointer' }}
+              >
+                ⚡ [Dev Test: Simulate Verification]
+              </button>
+            )}
+
+            <hr style={{ margin: '1rem 0', borderColor: '#E5E7EB' }} />
+            
+            <button disabled style={{ width: '100%', backgroundColor: '#9CA3AF', color: '#ffffff', padding: '0.75rem', borderRadius: '8px', fontWeight: '500', border: 'none', cursor: 'not-allowed' }}>Pay via UPI (Instant Intent)</button>
+            <button disabled style={{ width: '100%', backgroundColor: '#F3F4F6', color: '#9CA3AF', padding: '0.75rem', borderRadius: '8px', fontWeight: '500', border: '1px solid #E5E7EB', cursor: 'not-allowed' }}>Pay via Credit / Debit Card</button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div style={{ backgroundColor: '#ECFDF5', border: '1px solid #10B981', color: '#047857', padding: '1rem', borderRadius: '8px', fontWeight: '500' }}>
+              ✓ 18+ Age Verified Successfully
+            </div>
+            
+            <button style={{ width: '100%', backgroundColor: '#10B981', color: '#ffffff', padding: '0.75rem', borderRadius: '8px', fontWeight: '600', border: 'none', cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(16, 185, 129, 0.2)' }}>
+              Pay via UPI (Instant Intent)
+            </button>
+            
+            <button style={{ width: '100%', backgroundColor: '#ffffff', color: '#374151', padding: '0.75rem', borderRadius: '8px', fontWeight: '500', border: '1px solid #D1D5DB', cursor: 'pointer' }}>
+              Pay via Credit / Debit Card
+            </button>
+          </div>
+        )}
+
       </div>
-    </main>
+    </div>
   );
 }
