@@ -1,369 +1,332 @@
 import zlib from "zlib";
 
-export type AadhaarQRResult = {
-  qrData: string;
+export interface ParsedAadhaarQR {
   signedData: Buffer;
   signature: Buffer;
-  fields: string[];
-  birthDate: Date;
-  birthYear: number;
-  rawPayloadLength: number;
-};
-
-const MAX_QR_LENGTH = 15000;
-
-function normalizeQR(
-  qrData: string
-): string {
-  return qrData
-    .replace(/\s+/g, "")
-    .trim();
+  birthDate?: Date;
+  birthYear?: number;
 }
 
-function decimalToBytes(
-  decimal: string
-): Buffer {
-  try {
-    const value =
-      BigInt(decimal);
-
-    if (value <= 0n) {
-      throw new Error();
-    }
-
-    let hex =
-      value.toString(16);
-
-    if (
-      hex.length % 2 !== 0
-    ) {
-      hex =
-        `0${hex}`;
-    }
-
-    return Buffer.from(
-      hex,
-      "hex"
-    );
-  } catch {
-    throw new Error(
-      "Invalid Aadhaar QR decimal payload."
-    );
-  }
-}
-
-function gunzip(
-  data: Buffer
-): Buffer {
-  try {
-    return zlib.gunzipSync(
-      data
-    );
-  } catch {
-    throw new Error(
-      "Aadhaar QR payload is not valid gzip data."
-    );
-  }
-}
-
-function splitFields(
-  signedData: Buffer
-): string[] {
-  const fields: string[] = [];
-
-  let start = 0;
-
-  for (
-    let i = 0;
-    i < signedData.length;
-    i++
-  ) {
-    if (
-      signedData[i] === 0xff
-    ) {
-      fields.push(
-        signedData
-          .subarray(
-            start,
-            i
-          )
-          .toString(
-            "latin1"
-          )
-      );
-
-      start =
-        i + 1;
-
-      if (
-        fields.length >= 20
-      ) {
-        break;
-      }
-    }
-  }
-
-  /*
-   * Preserve the final field if the
-   * payload doesn't end with 0xff.
-   */
-  if (
-    start < signedData.length &&
-    fields.length < 20
-  ) {
-    fields.push(
-      signedData
-        .subarray(start)
-        .toString("latin1")
-    );
-  }
-
-  return fields;
-}
-
-function parseDateString(
+/**
+ * Convert the decimal QR payload into raw bytes.
+ */
+function decimalStringToBuffer(
   value: string
-): Date | null {
-  const cleaned =
-    value.trim();
+): Buffer {
+  const normalized = value.trim();
+
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(
+      "QR payload is not decimal."
+    );
+  }
+
+  const number = BigInt(normalized);
+
+  let hex = number.toString(16);
+
+  if (hex.length % 2 !== 0) {
+    hex = "0" + hex;
+  }
+
+  return Buffer.from(
+    hex,
+    "hex"
+  );
+}
+
+/**
+ * Try to extract a plausible DOB from decoded
+ * Secure QR fields.
+ */
+function findBirthDate(
+  data: Buffer
+): Date | undefined {
+  const text = data
+    .toString("utf8")
+    .replace(/\0/g, " ");
 
   /*
-   * Supports:
+   * Look for common date representations:
    *
    * DD-MM-YYYY
    * DD/MM/YYYY
    * DD.MM.YYYY
+   *
+   * This is deliberately conservative.
    */
-  const match =
-    cleaned.match(
-      /^(\d{2})[-/.](\d{2})[-/.](\d{4})$/
+  const dateRegex =
+    /(?:^|[^0-9])(\d{2})[-/.](\d{2})[-/.](\d{4})(?:[^0-9]|$)/g;
+
+  let match: RegExpExecArray | null;
+
+  while (
+    (match = dateRegex.exec(text)) !== null
+  ) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+
+    if (
+      year < 1900 ||
+      year > new Date().getFullYear()
+    ) {
+      continue;
+    }
+
+    if (
+      month < 1 ||
+      month > 12
+    ) {
+      continue;
+    }
+
+    if (
+      day < 1 ||
+      day > 31
+    ) {
+      continue;
+    }
+
+    const date = new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        day
+      )
     );
 
-  if (!match) {
-    return null;
+    // Reject impossible dates such as 31/02/2000.
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      continue;
+    }
+
+    return date;
   }
 
-  const day =
-    Number(match[1]);
-
-  const month =
-    Number(match[2]);
-
-  const year =
-    Number(match[3]);
-
-  if (
-    year < 1900 ||
-    year > new Date().getFullYear()
-  ) {
-    return null;
-  }
-
-  if (
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    day > 31
-  ) {
-    return null;
-  }
-
-  /*
-   * Construct locally and verify the
-   * resulting calendar components.
-   */
-  const date =
-    new Date(
-      year,
-      month - 1,
-      day
-    );
-
-  if (
-    date.getFullYear() !== year ||
-    date.getMonth() !==
-      month - 1 ||
-    date.getDate() !== day
-  ) {
-    return null;
-  }
-
-  return date;
+  return undefined;
 }
 
-function findBirthDate(
-  fields: string[]
-): Date | null {
-  /*
-   * First look for an explicit
-   * DD-MM-YYYY style date.
-   */
-  for (
-    const field of fields
-  ) {
-    const parsed =
-      parseDateString(
-        field
+/**
+ * Parse the currently expected Aadhaar Secure QR
+ * representation.
+ *
+ * The current implementation assumes:
+ *
+ * decimal QR payload
+ *        ↓
+ * big-endian byte representation
+ *        ↓
+ * gzip-compressed payload
+ *        ↓
+ * final 256 bytes = RSA signature
+ *        ↓
+ * preceding bytes = signed data
+ *
+ * This assumption must be validated against the exact
+ * Secure QR format used by the Aadhaar QR being supplied.
+ */
+export function parseAadhaarSecureQR(
+  qrData: string
+): ParsedAadhaarQR | null {
+  try {
+    const value = qrData.trim();
+
+    if (!/^\d+$/.test(value)) {
+      return null;
+    }
+
+    if (
+      value.length < 300 ||
+      value.length > 15000
+    ) {
+      return null;
+    }
+
+    const raw = decimalStringToBuffer(
+      value
+    );
+
+    if (raw.length < 257) {
+      return null;
+    }
+
+    let decompressed: Buffer;
+
+    try {
+      decompressed =
+        zlib.gunzipSync(raw);
+    } catch {
+      /*
+       * Some representations may contain
+       * leading bytes before the gzip stream.
+       *
+       * Search for the gzip magic header,
+       * but keep this bounded.
+       */
+      const gzipOffset =
+        findGzipHeader(raw);
+
+      if (gzipOffset < 0) {
+        return null;
+      }
+
+      try {
+        decompressed =
+          zlib.gunzipSync(
+            raw.subarray(gzipOffset)
+          );
+      } catch {
+        return null;
+      }
+    }
+
+    if (decompressed.length < 257) {
+      return null;
+    }
+
+    /*
+     * Current implementation expects a
+     * 256-byte RSA signature at the end.
+     */
+    const signature =
+      decompressed.subarray(
+        decompressed.length - 256
       );
 
-    if (parsed) {
-      return parsed;
+    const signedData =
+      decompressed.subarray(
+        0,
+        decompressed.length - 256
+      );
+
+    if (
+      signedData.length === 0 ||
+      signature.length !== 256
+    ) {
+      return null;
+    }
+
+    const birthDate =
+      findBirthDate(
+        signedData
+      );
+
+    /*
+     * We require an actual DOB rather than
+     * guessing adulthood from unrelated data.
+     */
+    if (!birthDate) {
+      return null;
+    }
+
+    return {
+      signedData,
+      signature,
+      birthDate,
+      birthYear:
+        birthDate.getUTCFullYear(),
+    };
+  } catch (error) {
+    console.error(
+      "Aadhaar Secure QR parsing failed:",
+      error
+    );
+
+    return null;
+  }
+}
+
+/**
+ * Locate gzip magic bytes:
+ *
+ * 1F 8B
+ */
+function findGzipHeader(
+  buffer: Buffer
+): number {
+  const maxSearch =
+    Math.min(
+      buffer.length - 1,
+      4096
+    );
+
+  for (
+    let i = 0;
+    i < maxSearch;
+    i++
+  ) {
+    if (
+      buffer[i] === 0x1f &&
+      buffer[i + 1] === 0x8b
+    ) {
+      return i;
     }
   }
 
-  /*
-   * Preserve compatibility with the
-   * previous parser's year-only behavior.
-   *
-   * A year alone is NOT sufficient for
-   * exact birthday-aware age verification,
-   * so this deliberately returns null.
-   */
-  return null;
+  return -1;
 }
 
-export function parseAadhaarSecureQR(
-  qrData: string
-): AadhaarQRResult {
-  const normalized =
-    normalizeQR(
-      qrData
-    );
-
-  if (
-    !/^\d+$/.test(
-      normalized
-    )
-  ) {
-    throw new Error(
-      "QR is not an Aadhaar Secure QR decimal payload."
-    );
-  }
-
-  if (
-    normalized.length < 300 ||
-    normalized.length >
-      MAX_QR_LENGTH
-  ) {
-    throw new Error(
-      "Aadhaar QR payload length is outside the expected range."
-    );
-  }
-
-  const compressed =
-    decimalToBytes(
-      normalized
-    );
-
-  /*
-   * Prevent obviously pathological
-   * payloads before decompression.
-   */
-  if (
-    compressed.length >
-    12 * 1024
-  ) {
-    throw new Error(
-      "Aadhaar QR compressed payload is unexpectedly large."
-    );
-  }
-
-  const decompressed =
-    gunzip(
-      compressed
-    );
-
-  if (
-    decompressed.length <= 256
-  ) {
-    throw new Error(
-      "Aadhaar QR payload does not contain a valid signature."
-    );
-  }
-
-  /*
-   * Aadhaar Secure QR signatures are
-   * expected to occupy the final 256 bytes
-   * for this parser.
-   */
-  const signature =
-    Buffer.from(
-      decompressed.subarray(
-        decompressed.length -
-          256
-      )
-    );
-
-  const signedData =
-    Buffer.from(
-      decompressed.subarray(
-        0,
-        decompressed.length -
-          256
-      )
-    );
-
-  if (
-    signedData.length === 0
-  ) {
-    throw new Error(
-      "Aadhaar QR signed data is empty."
-    );
-  }
-
-  const fields =
-    splitFields(
-      signedData
-    );
-
-  const birthDate =
-    findBirthDate(
-      fields
-    );
-
-  if (!birthDate) {
-    throw new Error(
-      "Could not extract a complete date of birth from Aadhaar Secure QR."
-    );
-  }
-
-  return {
-    qrData:
-      normalized,
-    signedData,
-    signature,
-    fields,
-    birthDate,
-    birthYear:
-      birthDate.getFullYear(),
-    rawPayloadLength:
-      decompressed.length,
-  };
-}
-
+/**
+ * Birthday-aware 18+ calculation.
+ *
+ * Accepts either:
+ *   - Date
+ *   - birth year
+ */
 export function isAdult(
-  birthDate: Date,
-  referenceDate = new Date()
+  birthDateOrYear:
+    | Date
+    | number
 ): boolean {
-  let age =
-    referenceDate.getFullYear() -
-    birthDate.getFullYear();
-
-  const birthdayHasOccurred =
-    referenceDate.getMonth() >
-      birthDate.getMonth() ||
-    (
-      referenceDate.getMonth() ===
-        birthDate.getMonth() &&
-      referenceDate.getDate() >=
-        birthDate.getDate()
-    );
+  const today =
+    new Date();
 
   if (
-    !birthdayHasOccurred
+    birthDateOrYear instanceof Date
   ) {
-    age -= 1;
+    const dob =
+      new Date(
+        birthDateOrYear
+      );
+
+    let age =
+      today.getFullYear() -
+      dob.getUTCFullYear();
+
+    const birthdayThisYear =
+      new Date(
+        today.getFullYear(),
+        dob.getUTCMonth(),
+        dob.getUTCDate()
+      );
+
+    if (
+      today < birthdayThisYear
+    ) {
+      age--;
+    }
+
+    return age >= 18;
   }
 
-  return age >= 18;
+  const year =
+    Number(birthDateOrYear);
+
+  if (
+    !Number.isInteger(year) ||
+    year < 1900 ||
+    year > today.getFullYear()
+  ) {
+    return false;
+  }
+
+  return (
+    today.getFullYear() -
+    year >= 18
+  );
 }
