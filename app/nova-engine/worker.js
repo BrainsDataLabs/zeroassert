@@ -1,4 +1,4 @@
-// nova-engine/worker.js
+// app/nova-engine/worker.js
 self.onmessage = async function (e) {
   const { qrData } = e.data;
 
@@ -18,7 +18,7 @@ self.onmessage = async function (e) {
     self.postMessage({ progress: 60, status: 'Validating 17 RSA-2048 signature layers...' });
     for (let i = 1; i <= 5; i++) {
       await new Promise((r) => setTimeout(r, 150));
-      self.postMessage({ progress: 60 + i * 5, status: `Folding polynomial constraint layer ${i}/5...` });
+      self.postMessage({ progress: 60 + (i * 5), status: `Folding polynomial constraint layer ${i}/5...` });
     }
 
     // Step 4: Spartan / Nova polynomial compression (90%)
@@ -26,11 +26,12 @@ self.onmessage = async function (e) {
     await new Promise((r) => setTimeout(r, 400));
 
     // Step 5: Finalization (100%)
+    const randomStr = Math.random().toString(36).substring(2);
     self.postMessage({ 
       progress: 100, 
       status: 'Proof generated successfully', 
       success: true,
-      proof: { nullifier: 'nova_proof_' + Math.random().toString(36.substring(2)) } 
+      proof: { nullifier: 'nova_proof_' + randomStr } 
     });
 
   } catch (err) {
