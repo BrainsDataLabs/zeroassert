@@ -1,4 +1,4 @@
-// nova-engine/NovaScanner.jsx
+// app/nova-engine/NovaScanner.jsx
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -15,11 +15,10 @@ export default function NovaScanner({ onVerified }) {
   const workerRef = useRef(null);
 
   useEffect(() => {
-    // Initialize Web Worker
     workerRef.current = new Worker(new URL('./worker.js', import.meta.url));
     workerRef.current.onmessage = (event) => {
       const { progress, status, success, proof, error } = event.data;
-      if (progress) setProgress(progress);
+      if (progress !== undefined) setProgress(progress);
       if (status) setStatusText(status);
 
       if (success) {
@@ -47,7 +46,6 @@ export default function NovaScanner({ onVerified }) {
       const videoInputDevices = await BrowserQRCodeReader.listVideoInputDevices();
       const activeDeviceId = videoInputDevices[0]?.deviceId;
 
-      // Decode continuously from physical camera stream
       await codeReader.current.decodeFromVideoDevice(
         activeDeviceId,
         videoRef.current,
@@ -56,7 +54,6 @@ export default function NovaScanner({ onVerified }) {
             const rawText = result.getText();
             codeReader.current.reset();
             
-            // Hand off raw QR payload to Worker for Nova ZKP proving
             setStatusText('QR detected! Spawning browser prover...');
             workerRef.current.postMessage({ qrData: rawText });
           }
