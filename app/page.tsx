@@ -104,18 +104,31 @@ export default function AgeVerificationGateway() {
         70
       );
 
-      const data =
-        await response.json();
+     const contentType =
+  response.headers.get("content-type") || "";
 
-      if (
-        !response.ok ||
-        !data.success
-      ) {
-        throw new Error(
-          data.error ||
-            "Verification failed."
-        );
-      }
+if (!contentType.includes("application/json")) {
+  const text = await response.text();
+
+  console.error(
+    "Expected JSON but received:",
+    text.slice(0, 500)
+  );
+
+  throw new Error(
+    `Verification API returned ${response.status} ${response.statusText} instead of JSON.`
+  );
+}
+
+const data = await response.json();
+
+if (!response.ok || !data.success) {
+  throw new Error(
+    data.error || "Verification failed."
+  );
+} 
+
+      
 
       setProgress(
         100
