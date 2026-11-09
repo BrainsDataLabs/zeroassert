@@ -1,38 +1,70 @@
 "use client";
 
-import { useState } from "react";
+import {
+  useCallback,
+  useState,
+} from "react";
+
 import NovaScanner from "./nova-engine/NovaScanner";
 
 export default function AgeVerificationGateway() {
-  const [mode, setMode] =
-    useState<"ephemeral" | "nova">("ephemeral");
+  const [
+    mode,
+    setMode,
+  ] =
+    useState<
+      "ephemeral" | "nova"
+    >("ephemeral");
 
-  const [loading, setLoading] =
+  const [
+    loading,
+    setLoading,
+  ] =
     useState(false);
 
-  const [statusMessage, setStatusMessage] =
+  const [
+    statusMessage,
+    setStatusMessage,
+  ] =
     useState("");
 
-  const [verified, setVerified] =
+  const [
+    verified,
+    setVerified,
+  ] =
     useState(false);
 
-  const [error, setError] =
+  const [
+    error,
+    setError,
+  ] =
     useState("");
 
-  const [progress, setProgress] =
+  const [
+    progress,
+    setProgress,
+  ] =
     useState(0);
 
   async function handleEphemeralUpload(
     e: React.ChangeEvent<HTMLInputElement>
   ) {
-    const file = e.target.files?.[0];
+    const file =
+      e.target.files?.[0];
 
-    if (!file) return;
+    if (!file)
+      return;
 
     setError("");
-    setVerified(false);
-    setLoading(true);
-    setProgress(10);
+    setVerified(
+      false
+    );
+    setLoading(
+      true
+    );
+    setProgress(
+      10
+    );
 
     try {
       setStatusMessage(
@@ -47,7 +79,9 @@ export default function AgeVerificationGateway() {
         file
       );
 
-      setProgress(25);
+      setProgress(
+        25
+      );
 
       setStatusMessage(
         "Uploading document for temporary processing..."
@@ -57,13 +91,18 @@ export default function AgeVerificationGateway() {
         await fetch(
           "/api/verify-ephemeral",
           {
-            method: "POST",
-            body: formData,
-            cache: "no-store",
+            method:
+              "POST",
+            body:
+              formData,
+            cache:
+              "no-store",
           }
         );
 
-      setProgress(70);
+      setProgress(
+        70
+      );
 
       const data =
         await response.json();
@@ -78,77 +117,120 @@ export default function AgeVerificationGateway() {
         );
       }
 
-      setProgress(100);
+      setProgress(
+        100
+      );
 
-      setVerified(true);
+      setVerified(
+        true
+      );
 
       setStatusMessage(
         "Age verified. Checkout unlocked."
       );
-    } catch (err: any) {
+
+    } catch (
+      err: any
+    ) {
       setError(
         err?.message ||
           "Verification failed."
       );
 
-      setProgress(0);
-    } finally {
-      setLoading(false);
+      setProgress(
+        0
+      );
 
-      /*
-       * Clear the input value so the same image
-       * can be selected again after failure.
-       */
-      e.target.value = "";
+    } finally {
+      setLoading(
+        false
+      );
+
+      e.target.value =
+        "";
     }
   }
 
-  function handleNovaVerified(
-    proof: any
-  ) {
-    setVerified(true);
+  const handleNovaVerified =
+    useCallback(
+      (proof: any) => {
+        console.log(
+          "Nova proof received:",
+          proof
+        );
 
-    setStatusMessage(
-      "Client-side proof generated and verified."
+        setVerified(
+          true
+        );
+
+        setStatusMessage(
+          "Client-side proof generated and verified."
+        );
+      },
+      []
     );
-  }
 
   function reset() {
-    setVerified(false);
-    setError("");
-    setStatusMessage("");
-    setProgress(0);
+    setVerified(
+      false
+    );
+
+    setError(
+      ""
+    );
+
+    setStatusMessage(
+      ""
+    );
+
+    setProgress(
+      0
+    );
   }
 
   return (
     <main
       style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#F9FAFB",
-        padding: "1.5rem",
+        minHeight:
+          "100vh",
+        display:
+          "flex",
+        alignItems:
+          "center",
+        justifyContent:
+          "center",
+        background:
+          "#F9FAFB",
+        padding:
+          "1.5rem",
       }}
     >
       <div
         style={{
-          width: "100%",
-          maxWidth: "440px",
-          background: "#FFFFFF",
-          borderRadius: "16px",
+          width:
+            "100%",
+          maxWidth:
+            "440px",
+          background:
+            "#FFFFFF",
+          borderRadius:
+            "16px",
           boxShadow:
             "0 10px 30px rgba(0,0,0,0.06)",
-          padding: "2rem",
+          padding:
+            "2rem",
         }}
       >
         <h1
           style={{
-            fontSize: "1.5rem",
-            fontWeight: 700,
-            textAlign: "center",
-            marginBottom: "1.5rem",
-            color: "#111827",
+            fontSize:
+              "1.5rem",
+            fontWeight:
+              700,
+            textAlign:
+              "center",
+            marginBottom:
+              "1.5rem",
           }}
         >
           Age Verification Gateway
@@ -156,32 +238,47 @@ export default function AgeVerificationGateway() {
 
         <div
           style={{
-            display: "flex",
-            background: "#F3F4F6",
-            borderRadius: "10px",
-            padding: "4px",
-            marginBottom: "1.5rem",
+            display:
+              "flex",
+            background:
+              "#F3F4F6",
+            borderRadius:
+              "10px",
+            padding:
+              "4px",
+            marginBottom:
+              "1.5rem",
           }}
         >
           <button
             type="button"
             onClick={() => {
-              setMode("ephemeral");
+              setMode(
+                "ephemeral"
+              );
               reset();
             }}
             style={{
-              flex: 1,
-              padding: "0.7rem 0.5rem",
-              border: 0,
-              borderRadius: "8px",
-              cursor: "pointer",
-              fontWeight: 600,
+              flex:
+                1,
+              padding:
+                "0.7rem 0.5rem",
+              border:
+                0,
+              borderRadius:
+                "8px",
+              cursor:
+                "pointer",
+              fontWeight:
+                600,
               background:
-                mode === "ephemeral"
+                mode ===
+                "ephemeral"
                   ? "#2563EB"
                   : "transparent",
               color:
-                mode === "ephemeral"
+                mode ===
+                "ephemeral"
                   ? "#FFFFFF"
                   : "#4B5563",
             }}
@@ -192,22 +289,32 @@ export default function AgeVerificationGateway() {
           <button
             type="button"
             onClick={() => {
-              setMode("nova");
+              setMode(
+                "nova"
+              );
               reset();
             }}
             style={{
-              flex: 1,
-              padding: "0.7rem 0.5rem",
-              border: 0,
-              borderRadius: "8px",
-              cursor: "pointer",
-              fontWeight: 600,
+              flex:
+                1,
+              padding:
+                "0.7rem 0.5rem",
+              border:
+                0,
+              borderRadius:
+                "8px",
+              cursor:
+                "pointer",
+              fontWeight:
+                600,
               background:
-                mode === "nova"
+                mode ===
+                "nova"
                   ? "#2563EB"
                   : "transparent",
               color:
-                mode === "nova"
+                mode ===
+                "nova"
                   ? "#FFFFFF"
                   : "#4B5563",
             }}
@@ -219,18 +326,22 @@ export default function AgeVerificationGateway() {
         {verified ? (
           <div
             style={{
-              padding: "1.5rem",
-              background: "#ECFDF5",
+              padding:
+                "1.5rem",
+              background:
+                "#ECFDF5",
               border:
                 "1px solid #A7F3D0",
-              borderRadius: "12px",
-              textAlign: "center",
+              borderRadius:
+                "12px",
+              textAlign:
+                "center",
             }}
           >
             <div
               style={{
-                fontSize: "2rem",
-                marginBottom: "0.5rem",
+                fontSize:
+                  "2rem",
               }}
             >
               ✅
@@ -238,8 +349,8 @@ export default function AgeVerificationGateway() {
 
             <h3
               style={{
-                color: "#065F46",
-                marginBottom: "0.5rem",
+                color:
+                  "#065F46",
               }}
             >
               Age Verified — 18+
@@ -247,29 +358,39 @@ export default function AgeVerificationGateway() {
 
             <p
               style={{
-                fontSize: "0.85rem",
-                color: "#047857",
+                fontSize:
+                  "0.85rem",
+                color:
+                  "#047857",
               }}
             >
               {statusMessage}
             </p>
 
             <button
-              onClick={reset}
+              onClick={
+                reset
+              }
               style={{
-                marginTop: "1rem",
+                marginTop:
+                  "1rem",
                 padding:
                   "0.65rem 1rem",
-                border: 0,
-                borderRadius: "8px",
-                background: "#065F46",
-                color: "#FFFFFF",
+                border:
+                  0,
+                borderRadius:
+                  "8px",
+                background:
+                  "#065F46",
+                color:
+                  "#FFFFFF",
               }}
             >
               Verify another document
             </button>
           </div>
-        ) : mode === "nova" ? (
+        ) : mode ===
+          "nova" ? (
           <NovaScanner
             onVerified={
               handleNovaVerified
@@ -279,29 +400,34 @@ export default function AgeVerificationGateway() {
           <div>
             <p
               style={{
-                fontSize: "0.875rem",
-                color: "#4B5563",
-                textAlign: "center",
-                lineHeight: 1.5,
-                marginBottom: "1.25rem",
+                fontSize:
+                  "0.875rem",
+                color:
+                  "#4B5563",
+                textAlign:
+                  "center",
+                lineHeight:
+                  1.5,
               }}
             >
-              Your Aadhaar image is processed
-              temporarily for verification and
-              is not returned to the merchant.
+              Your Aadhaar image is processed temporarily for verification and is not returned to the merchant.
             </p>
 
             {error && (
               <div
                 style={{
-                  background: "#FEF2F2",
+                  background:
+                    "#FEF2F2",
                   border:
                     "1px solid #FECACA",
-                  color: "#B91C1C",
-                  padding: "0.9rem",
-                  borderRadius: "8px",
-                  fontSize: "0.82rem",
-                  marginBottom: "1.25rem",
+                  color:
+                    "#B91C1C",
+                  padding:
+                    "0.9rem",
+                  borderRadius:
+                    "8px",
+                  marginBottom:
+                    "1.25rem",
                 }}
               >
                 {error}
@@ -310,19 +436,24 @@ export default function AgeVerificationGateway() {
 
             <label
               style={{
-                display: "block",
-                width: "100%",
+                display:
+                  "block",
+                width:
+                  "100%",
                 padding:
                   "1.6rem 1rem",
                 border:
                   "2px dashed #D1D5DB",
-                borderRadius: "12px",
-                textAlign: "center",
+                borderRadius:
+                  "12px",
+                textAlign:
+                  "center",
                 cursor:
                   loading
                     ? "not-allowed"
                     : "pointer",
-                background: "#F9FAFB",
+                background:
+                  "#F9FAFB",
                 boxSizing:
                   "border-box",
               }}
@@ -333,18 +464,21 @@ export default function AgeVerificationGateway() {
                 onChange={
                   handleEphemeralUpload
                 }
-                disabled={loading}
+                disabled={
+                  loading
+                }
                 style={{
-                  display: "none",
+                  display:
+                    "none",
                 }}
               />
 
               <span
                 style={{
-                  display: "block",
-                  fontSize: "1.8rem",
-                  marginBottom:
-                    "0.5rem",
+                  display:
+                    "block",
+                  fontSize:
+                    "1.8rem",
                 }}
               >
                 📄
@@ -352,9 +486,10 @@ export default function AgeVerificationGateway() {
 
               <span
                 style={{
-                  display: "block",
-                  fontWeight: 600,
-                  color: "#1F2937",
+                  display:
+                    "block",
+                  fontWeight:
+                    600,
                 }}
               >
                 {loading
@@ -364,35 +499,33 @@ export default function AgeVerificationGateway() {
 
               <span
                 style={{
-                  display: "block",
-                  fontSize: "0.75rem",
-                  color: "#6B7280",
-                  marginTop:
-                    "0.3rem",
+                  display:
+                    "block",
+                  fontSize:
+                    "0.75rem",
+                  color:
+                    "#6B7280",
                 }}
               >
-                PNG, JPG or WebP ·
-                Maximum 10 MB
+                PNG, JPG or WebP · Maximum 10 MB
               </span>
             </label>
 
             {loading && (
               <div
                 style={{
-                  marginTop: "1.25rem",
+                  marginTop:
+                    "1.25rem",
                 }}
               >
                 <div
                   style={{
-                    display: "flex",
+                    display:
+                      "flex",
                     justifyContent:
                       "space-between",
                     fontSize:
                       "0.8rem",
-                    color:
-                      "#4B5563",
-                    marginBottom:
-                      "0.4rem",
                   }}
                 >
                   <span>
@@ -406,8 +539,10 @@ export default function AgeVerificationGateway() {
 
                 <div
                   style={{
-                    width: "100%",
-                    height: "8px",
+                    width:
+                      "100%",
+                    height:
+                      "8px",
                     background:
                       "#E5E7EB",
                     borderRadius:
