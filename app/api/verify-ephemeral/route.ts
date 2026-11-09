@@ -43,7 +43,6 @@ function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer
     }
 
     const luminanceSource = new RGBLuminanceSource(luminances, width, height);
-
     const reader = new MultiFormatReader();
     const hints = new Map();
     hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
@@ -123,6 +122,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      // Preserve pixel density for high-res screenshots
       const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
       if (maxDim > 2400) {
         if (image.bitmap.width > image.bitmap.height) {
@@ -132,44 +132,46 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // 1. ADVANCED SCANNING PIPELINE
+      // --- EXTREME SCANNING PIPELINE ---
       let qrText: string | null = decodeBitmap(image.bitmap);
 
-      // Pass B: Quiet Zone Padding (Restores missing white borders on tight crops)
       let paddedImage: any;
       if (!qrText) {
+        // Fix for tight digital crops: add virtual quiet zone
         paddedImage = new Jimp(image.bitmap.width + 120, image.bitmap.height + 120, 0xFFFFFFFF);
         paddedImage.composite(image, 60, 60);
         qrText = decodeBitmap(paddedImage.bitmap);
       }
 
-      // Pass C: Nearest-Neighbor Upscaling (Enlarges QR on full-page digital screenshots)
       if (!qrText && paddedImage) {
+        // Fix for sub-pixel density full-page screenshots
         const scaled = paddedImage.clone().scale(2, Jimp.RESIZE_NEAREST_NEIGHBOR);
         qrText = decodeBitmap(scaled.bitmap);
       }
 
-      // Pass D: Contrast + Grayscale normalization (For physical camera shadows)
       if (!qrText) {
+        // Fix for physical camera lighting gradients
         const enhanced = image.clone().greyscale().contrast(0.3).normalize();
         qrText = decodeBitmap(enhanced.bitmap);
       }
 
-      // Pass E: Rotational sweep (For physical camera EXIF flips)
       if (!qrText) {
+        // Aggressive binary thresholding for blurred/noisy physical prints
+        const thresholded = image.clone().greyscale().threshold({ max: 128 });
+        qrText = decodeBitmap(thresholded.bitmap);
+      }
+
+      if (!qrText) {
+        // Rotational sweep for EXIF anomalies
         for (const angle of [90, 180, 270]) {
           const rotated = image.clone().rotate(angle);
           qrText = decodeBitmap(rotated.bitmap);
           if (qrText) break;
-
-          const rotEnhanced = rotated.clone().greyscale().contrast(0.3).normalize();
-          qrText = decodeBitmap(rotEnhanced.bitmap);
-          if (qrText) break;
         }
       }
 
-      // Pass F: Fallback jsQR
       if (!qrText) {
+        // Final fallback with jsQR inversion logic
         const jsQrResult = jsQR(
           new Uint8ClampedArray(image.bitmap.data),
           image.bitmap.width,
@@ -181,18 +183,19 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Educate the user immediately if they cut off the finder patterns
       if (!qrText) {
         return NextResponse.json(
           { 
             success: false, 
             age_verified: false, 
-            error: 'No QR code detected. Ensure the QR code is clearly framed with a white border.' 
+            error: 'No QR code detected. If you cropped the image, ensure all four corners of the QR code are fully visible with a white border.' 
           },
           { status: 400 }
         );
       }
 
-      // 2. MULTI-FORMAT DEMOGRAPHIC EXTRACTION
+      // --- DEMOGRAPHIC EXTRACTION ---
       let birthYear: number | null = null;
       const rawString = qrText.trim();
 
@@ -206,6 +209,7 @@ export async function POST(req: NextRequest) {
       } else {
         let decompressed: Buffer | null = null;
 
+        // Path A: Numeric BigInt format (e-Aadhaar PDFs)
         const cleanDigits = rawString.replace(/[^0-9]/g, '');
         if (cleanDigits.length > 300) {
           try {
@@ -218,11 +222,13 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // Path B: Raw Byte format (Physical PVC cards)
         if (!decompressed) {
           const rawBytes = Buffer.from(rawString, 'latin1');
           decompressed = tryDecompress(rawBytes);
         }
 
+        // Path C: Sliced GZIP search
         if (!decompressed) {
           const rawBytes = Buffer.from(rawString, 'latin1');
           for (let i = 0; i < rawBytes.length - 1; i++) {
@@ -282,7 +288,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 3. STATUTORY 18+ ASSERTION
+      // --- STATUTORY 18+ ASSERTION ---
       const currentYear = new Date().getFullYear();
       const calculatedAge = currentYear - birthYear;
 
@@ -308,7 +314,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. AUDIT LOGGING & SUPABASE LOGIC
+    // --- AUDIT LOGGING ---
     const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
