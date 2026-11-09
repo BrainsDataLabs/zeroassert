@@ -974,4 +974,4 @@ export default function NovaScanner({
       )}
     </div>
   );
-        
+}
