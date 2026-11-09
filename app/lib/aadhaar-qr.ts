@@ -9,27 +9,69 @@ export type AadhaarQRResult = {
   rawPayloadLength: number;
 };
 
-const MAX_QR_LENGTH = 15000;
+const MAX_QR_LENGTH =
+  15000;
 
-function decimalToBytes(decimal: string): Buffer {
-  const value = BigInt(decimal);
-
-  if (value <= 0n) {
-    throw new Error("Invalid Aadhaar QR decimal payload.");
-  }
-
-  let hex = value.toString(16);
-
-  if (hex.length % 2 !== 0) {
-    hex = `0${hex}`;
-  }
-
-  return Buffer.from(hex, "hex");
+function normalizeQR(
+  qrData: string
+) {
+  return qrData
+    .replace(
+      /\s+/g,
+      ""
+    )
+    .trim();
 }
 
-function gunzip(data: Buffer): Buffer {
+function decimalToBytes(
+  decimal: string
+): Buffer {
   try {
-    return zlib.gunzipSync(data);
+    const value =
+      BigInt(
+        decimal
+      );
+
+    if (
+      value <=
+      0n
+    ) {
+      throw new Error();
+    }
+
+    let hex =
+      value.toString(
+        16
+      );
+
+    if (
+      hex.length %
+        2 !==
+      0
+    ) {
+      hex =
+        `0${hex}`;
+    }
+
+    return Buffer.from(
+      hex,
+      "hex"
+    );
+
+  } catch {
+    throw new Error(
+      "Invalid Aadhaar QR decimal payload."
+    );
+  }
+}
+
+function gunzip(
+  data: Buffer
+): Buffer {
+  try {
+    return zlib.gunzipSync(
+      data
+    );
   } catch {
     throw new Error(
       "Aadhaar QR payload is not valid gzip data."
@@ -40,23 +82,40 @@ function gunzip(data: Buffer): Buffer {
 function splitFields(
   signedData: Buffer
 ): string[] {
-  const fields: string[] = [];
+  const fields: string[] =
+    [];
 
-  let start = 0;
+  let start =
+    0;
 
-  for (let i = 0; i < signedData.length; i++) {
-    if (signedData[i] === 0xff) {
+  for (
+    let i = 0;
+    i <
+    signedData.length;
+    i++
+  ) {
+    if (
+      signedData[i] ===
+      0xff
+    ) {
       fields.push(
         signedData
-          .subarray(start, i)
-          .toString("latin1")
+          .subarray(
+            start,
+            i
+          )
+          .toString(
+            "latin1"
+          )
       );
 
-      start = i + 1;
+      start =
+        i + 1;
 
-      // We don't need to decode the photo or every
-      // demographic field for age verification.
-      if (fields.length >= 20) {
+      if (
+        fields.length >=
+        20
+      ) {
         break;
       }
     }
@@ -68,36 +127,59 @@ function splitFields(
 function findBirthYear(
   fields: string[]
 ): number | null {
-  // First look for DD/MM/YYYY style dates.
-  for (const field of fields) {
-    const value = field.trim();
+  for (
+    const field of
+      fields
+  ) {
+    const value =
+      field.trim();
 
-    const match = value.match(
-      /^(\d{2})[-/.](\d{2})[-/.](\d{4})$/
-    );
+    const match =
+      value.match(
+        /^(\d{2})[-/.](\d{2})[-/.](\d{4})$/
+      );
 
-    if (match) {
-      const year = Number(match[3]);
+    if (
+      match
+    ) {
+      const year =
+        Number(
+          match[3]
+        );
 
       if (
-        year >= 1900 &&
-        year <= new Date().getFullYear()
+        year >=
+          1900 &&
+        year <=
+          new Date().getFullYear()
       ) {
         return year;
       }
     }
   }
 
-  // Then look for a standalone 4-digit year.
-  for (const field of fields) {
-    const value = field.trim();
+  for (
+    const field of
+      fields
+  ) {
+    const value =
+      field.trim();
 
-    if (/^\d{4}$/.test(value)) {
-      const year = Number(value);
+    if (
+      /^\d{4}$/.test(
+        value
+      )
+    ) {
+      const year =
+        Number(
+          value
+        );
 
       if (
-        year >= 1900 &&
-        year <= new Date().getFullYear()
+        year >=
+          1900 &&
+        year <=
+          new Date().getFullYear()
       ) {
         return year;
       }
@@ -110,70 +192,91 @@ function findBirthYear(
 export function parseAadhaarSecureQR(
   qrData: string
 ): AadhaarQRResult {
-  const normalized = qrData.trim();
+  const normalized =
+    normalizeQR(
+      qrData
+    );
 
-  if (!/^\d+$/.test(normalized)) {
+  if (
+    !/^\d+$/.test(
+      normalized
+    )
+  ) {
     throw new Error(
       "QR is not an Aadhaar Secure QR decimal payload."
     );
   }
 
   if (
-    normalized.length < 300 ||
-    normalized.length > MAX_QR_LENGTH
+    normalized.length <
+      300 ||
+    normalized.length >
+      MAX_QR_LENGTH
   ) {
     throw new Error(
       "Aadhaar QR payload length is outside the expected range."
     );
   }
 
-  let compressed: Buffer;
-
-  try {
-    compressed = decimalToBytes(normalized);
-  } catch {
-    throw new Error(
-      "Could not reconstruct Aadhaar QR binary payload."
+  const compressed =
+    decimalToBytes(
+      normalized
     );
-  }
 
-  const decompressed = gunzip(compressed);
+  const decompressed =
+    gunzip(
+      compressed
+    );
 
-  if (decompressed.length <= 256) {
+  if (
+    decompressed.length <=
+    256
+  ) {
     throw new Error(
       "Aadhaar QR payload does not contain a valid signature."
     );
   }
 
-  /*
-   * Secure QR payload ends with a 256-byte RSA signature.
-   */
-  const signature = decompressed.subarray(
-    decompressed.length - 256
-  );
+  const signature =
+    decompressed.subarray(
+      decompressed.length -
+        256
+    );
 
-  const signedData = decompressed.subarray(
-    0,
-    decompressed.length - 256
-  );
+  const signedData =
+    decompressed.subarray(
+      0,
+      decompressed.length -
+        256
+    );
 
-  const fields = splitFields(signedData);
+  const fields =
+    splitFields(
+      signedData
+    );
 
-  const birthYear = findBirthYear(fields);
+  const birthYear =
+    findBirthYear(
+      fields
+    );
 
-  if (!birthYear) {
+  if (
+    !birthYear
+  ) {
     throw new Error(
       "Could not extract date of birth from Aadhaar Secure QR."
     );
   }
 
   return {
-    qrData: normalized,
+    qrData:
+      normalized,
     signedData,
     signature,
     fields,
     birthYear,
-    rawPayloadLength: decompressed.length,
+    rawPayloadLength:
+      decompressed.length,
   };
 }
 
@@ -181,11 +284,9 @@ export function isAdult(
   birthYear: number,
   referenceDate = new Date()
 ): boolean {
-
-  const currentYear =
-    referenceDate.getFullYear();
-
   return (
-    currentYear - birthYear >= 18
+    referenceDate.getFullYear() -
+      birthYear >=
+    18
   );
 }
