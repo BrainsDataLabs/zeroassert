@@ -11,6 +11,7 @@ import {
   RGBLuminanceSource,
   BinaryBitmap,
   HybridBinarizer,
+  GlobalHistogramBinarizer,
 } from '@zxing/library';
 
 export const dynamic = 'force-dynamic';
@@ -30,7 +31,7 @@ function generateAttestationProof(checkoutId: string, shopDomain: string, signat
     .digest('hex');
 }
 
-// ZXing Reader with HybridBinarizer
+// Multi-pass ZXing Reader (Hybrid + Global Histogram)
 function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer }): string | null {
   try {
     const { width, height, data } = imageBitmap;
@@ -43,7 +44,6 @@ function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer
     }
 
     const luminanceSource = new RGBLuminanceSource(luminances, width, height);
-    const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
 
     const reader = new MultiFormatReader();
     const hints = new Map();
@@ -51,11 +51,39 @@ function decodeBitmap(imageBitmap: { width: number; height: number; data: Buffer
     hints.set(DecodeHintType.TRY_HARDER, true);
     reader.setHints(hints);
 
-    const result = reader.decode(binaryBitmap);
-    return result.getText();
+    // Pass 1: HybridBinarizer (standard)
+    try {
+      const bitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
+      return reader.decode(bitmap).getText();
+    } catch {}
+
+    // Pass 2: GlobalHistogramBinarizer (better for paper reflections and camera shadows)
+    try {
+      const bitmap = new BinaryBitmap(new GlobalHistogramBinarizer(luminanceSource));
+      return reader.decode(bitmap).getText();
+    } catch {}
+
+    return null;
   } catch {
     return null;
   }
+}
+
+// Robust decompressor across all compression schemes
+function tryDecompress(buf: Buffer): Buffer | null {
+  try {
+    return zlib.gunzipSync(buf);
+  } catch {}
+  try {
+    return zlib.unzipSync(buf);
+  } catch {}
+  try {
+    return zlib.inflateRawSync(buf);
+  } catch {}
+  try {
+    return zlib.inflateSync(buf);
+  } catch {}
+  return null;
 }
 
 export async function POST(req: NextRequest) {
@@ -107,45 +135,40 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 1. OPTIMIZE FOR HIGH-DENSITY MATRICES
-      // Cap at 2200px max dimension: prevents memory exhaustion while preserving 
-      // sufficient pixel density (~4-6px per module) on dense 177x177 QR codes.
+      // 1. DOWNSCALE ONLY EXCESSIVELY LARGE IMAGES
+      // Keep up to 2400px so high-density matrices maintain required module pixel counts
       const maxDim = Math.max(image.bitmap.width, image.bitmap.height);
-      if (maxDim > 2200) {
+      if (maxDim > 2400) {
         if (image.bitmap.width > image.bitmap.height) {
-          image.resize(2200, Jimp.AUTO);
+          image.resize(2400, Jimp.AUTO);
         } else {
-          image.resize(Jimp.AUTO, 2200);
+          image.resize(Jimp.AUTO, 2400);
         }
       }
 
-      // 2. MULTI-PASS CAMERA DECODING PIPELINE
-      let qrText: string | null = null;
+      // 2. SCANNING PIPELINE
+      let qrText: string | null = decodeBitmap(image.bitmap);
 
-      // Pass A: Direct decode
-      qrText = decodeBitmap(image.bitmap);
-
-      // Pass B: Grayscale + Dynamic Contrast Normalization (compensates for room glare/shadows)
+      // Contrast + Grayscale normalization pass for lighting gradients
       if (!qrText) {
-        const normalized = image.clone().greyscale().contrast(0.35).normalize();
-        qrText = decodeBitmap(normalized.bitmap);
+        const enhanced = image.clone().greyscale().contrast(0.3).normalize();
+        qrText = decodeBitmap(enhanced.bitmap);
       }
 
-      // Pass C: Rotational Sweep (fixes phone EXIF orientation mismatches: 90, 180, 270 deg)
+      // Rotational sweep (addresses phone EXIF orientation flips)
       if (!qrText) {
         for (const angle of [90, 180, 270]) {
           const rotated = image.clone().rotate(angle);
           qrText = decodeBitmap(rotated.bitmap);
           if (qrText) break;
 
-          // Try contrast normalization on rotated frames
-          const rotNorm = rotated.clone().greyscale().contrast(0.35).normalize();
-          qrText = decodeBitmap(rotNorm.bitmap);
+          const rotEnhanced = rotated.clone().greyscale().contrast(0.3).normalize();
+          qrText = decodeBitmap(rotEnhanced.bitmap);
           if (qrText) break;
         }
       }
 
-      // Pass D: Fallback scanner with double-inversion check
+      // Fallback pass with jsQR
       if (!qrText) {
         const jsQrResult = jsQR(
           new Uint8ClampedArray(image.bitmap.data),
@@ -163,17 +186,17 @@ export async function POST(req: NextRequest) {
           { 
             success: false, 
             age_verified: false, 
-            error: 'No QR code detected. For camera photos, ensure good lighting and frame the QR code clearly.' 
+            error: 'No QR code detected. Ensure the QR code is clearly framed and well-focused.' 
           },
           { status: 400 }
         );
       }
 
-      // 3. PARSE DEMOGRAPHICS & EXTRACT BIRTH YEAR
+      // 3. MULTI-FORMAT DEMOGRAPHIC EXTRACTION
       let birthYear: number | null = null;
       const rawString = qrText.trim();
 
-      // Check legacy/offline XML
+      // Check format A: Legacy XML
       const xmlDob = rawString.match(/dob="(\d{2})[/.-](\d{2})[/.-](\d{4})"/i);
       const xmlYob = rawString.match(/yob="(\d{4})"/i);
 
@@ -182,63 +205,74 @@ export async function POST(req: NextRequest) {
       } else if (xmlYob) {
         birthYear = parseInt(xmlYob[1], 10);
       } else {
-        // Modern Secure QR: Large base-10 number string
-        const cleanDigits = rawString.replace(/[^0-9]/g, '');
+        // Modern Secure QR: Support both Numeric BigInt and Raw Latin-1 Byte streams
+        let decompressed: Buffer | null = null;
 
+        // Path 1: Numeric BigInt representation (e-Aadhaar format)
+        const cleanDigits = rawString.replace(/[^0-9]/g, '');
         if (cleanDigits.length > 300) {
           try {
             let hex = BigInt(cleanDigits).toString(16);
             if (hex.length % 2 !== 0) hex = '0' + hex;
             const compressed = Buffer.from(hex, 'hex');
+            decompressed = tryDecompress(compressed);
+          } catch (e) {
+            console.error('BigInt parsing error:', e);
+          }
+        }
 
-            let decompressed: Buffer | null = null;
-            try {
-              decompressed = zlib.gunzipSync(compressed);
-            } catch {
-              try {
-                decompressed = zlib.unzipSync(compressed);
-              } catch {
-                try {
-                  decompressed = zlib.inflateRawSync(compressed);
-                } catch (e) {
-                  console.error('Decompression failure:', e);
-                }
+        // Path 2: Raw byte stream (Physical PVC card format)
+        if (!decompressed) {
+          const rawBytes = Buffer.from(rawString, 'latin1');
+          decompressed = tryDecompress(rawBytes);
+        }
+
+        // Path 3: Sliced search for GZIP magic bytes (0x1F, 0x8B) in the buffer
+        if (!decompressed) {
+          const rawBytes = Buffer.from(rawString, 'latin1');
+          for (let i = 0; i < rawBytes.length - 1; i++) {
+            if (rawBytes[i] === 0x1f && rawBytes[i + 1] === 0x8b) {
+              decompressed = tryDecompress(rawBytes.subarray(i));
+              if (decompressed) break;
+            }
+          }
+        }
+
+        // Parse demographic fields from decompressed buffer
+        if (decompressed) {
+          const fields: string[] = [];
+          let start = 0;
+          for (let i = 0; i < decompressed.length; i++) {
+            if (decompressed[i] === 255) {
+              fields.push(decompressed.subarray(start, i).toString('latin1'));
+              start = i + 1;
+              if (fields.length >= 10) break;
+            }
+          }
+
+          if (fields.length > 3) {
+            const dobMatch = fields[3].match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+            if (dobMatch) {
+              birthYear = parseInt(dobMatch[3], 10);
+            } else if (/^\d{4}$/.test(fields[3].trim())) {
+              birthYear = parseInt(fields[3].trim(), 10);
+            }
+          }
+
+          if (!birthYear) {
+            for (const f of fields) {
+              const m = f.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+              if (m) {
+                birthYear = parseInt(m[3], 10);
+                break;
               }
             }
+          }
 
-            if (decompressed) {
-              const fields: string[] = [];
-              let start = 0;
-              for (let i = 0; i < decompressed.length; i++) {
-                if (decompressed[i] === 255) {
-                  fields.push(decompressed.subarray(start, i).toString('latin1'));
-                  start = i + 1;
-                  if (fields.length >= 10) break;
-                }
-              }
-
-              if (fields.length > 3) {
-                const dobField = fields[3];
-                const match = dobField.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-                if (match) {
-                  birthYear = parseInt(match[3], 10);
-                } else if (/^\d{4}$/.test(dobField.trim())) {
-                  birthYear = parseInt(dobField.trim(), 10);
-                }
-              }
-
-              if (!birthYear) {
-                for (const field of fields) {
-                  const m = field.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
-                  if (m) {
-                    birthYear = parseInt(m[3], 10);
-                    break;
-                  }
-                }
-              }
-            }
-          } catch (numErr) {
-            console.error('BigInt payload extraction error:', numErr);
+          if (!birthYear) {
+            const fullText = decompressed.toString('latin1');
+            const fallback = fullText.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+            if (fallback) birthYear = parseInt(fallback[3], 10);
           }
         }
       }
@@ -254,7 +288,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // 4. MATHEMATICAL 18+ ASSERTION
+      // 4. STATUTORY 18+ ASSERTION
       const currentYear = new Date().getFullYear();
       const calculatedAge = currentYear - birthYear;
 
@@ -280,7 +314,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5. ATTESTATION PROOF & SUPABASE AUDIT
+    // 5. AUDIT LOGGING & SUPABASE REVENUE LOGIC
     const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
     const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
